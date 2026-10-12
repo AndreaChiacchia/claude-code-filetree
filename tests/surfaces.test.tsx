@@ -741,6 +741,36 @@ test('a cwd change moves the tree and drops the old selection before the next pr
   await ui.unmount()
 })
 
+test('open at start off: no pane at start, on a cwd change or a prompt, until /filetree opens it', { timeoutMs: 20_000, options: { start: 'off' } }, async ($, on) => {
+  const ran: Ran = []
+  const a = '/home/k/repo-a'
+  const b = '/home/k/repo-b'
+  const c = '/home/k/repo-c'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: a, top: '', dirs: { [a]: [['a.txt', 'file']], [b]: [['b.txt', 'file']], [c]: [['c.txt', 'file']] }, status: '', numstat: '' }
+  const clock = world(on, w, ran)
+  on('classic.CwdChanged', () => ({}))
+  const before = opens.length
+  await $.session.start({ cwd: a, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  w.cwd = b
+  await $.prompt.submit({ text: 'look at @b.txt', wait: false } as any)
+  await clock.settle()
+  w.cwd = c
+  await $.classic.CwdChanged({ old_cwd: b, new_cwd: c } as any)
+  await clock.settle()
+  await $.session.start({ cwd: c, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect(opens.length).toBe(before)
+  await $.command.run(fullscreen(''))
+  await clock.settle()
+  expect(opens.slice(before)).toContainEqual(expect.objectContaining({ id: 'filetree', focus: true }))
+  const shown = opens.length
+  w.cwd = a
+  await $.classic.CwdChanged({ old_cwd: c, new_cwd: a } as any)
+  await clock.settle()
+  expect(opens.length).toBeGreaterThan(shown)
+})
+
 test('a background git push stays running until its task notification arrives', { timeoutMs: 20_000 }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'

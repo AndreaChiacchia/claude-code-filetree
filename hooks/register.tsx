@@ -1018,6 +1018,7 @@ export const register: Register = (on, options) => {
   followClaude = options?.follow !== 'off'
   sizeDefault = options?.column === 'size'
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
+  noDock = options?.start === 'off'
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd)' })
     const windows = (await $.env.get('OS')) === 'Windows_NT'
