@@ -345,6 +345,23 @@ test('desktop: a long tree draws every row and leaves the wheel to the app', { t
   await ui.unmount()
 })
 
+test('desktop: a very large open tree is cut with a note so the drawn tree stays within the engine bounds', { timeoutMs: 30_000 }, async ($, on) => {
+  const root = '/Users/k/huge'
+  const names = Array.from({ length: 5000 }, (_, i) => [`file-number-${String(i).padStart(5, '0')}.txt`, 'file'] as [string, 'file'])
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k', TMPDIR: '/var/folders/x/T/' }, cwd: root, top: '', dirs: { [root]: names }, status: '', numstat: '' }, [])
+  await $.session.start({ cwd: root, surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: { ...paneProps(60), scroll: { offset: 0, bodyRows: 20 } } })
+  await clock.settle()
+  const client = ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client')
+  const rows = client.props.props.rows as any[]
+  expect(JSON.stringify(client.props.props).length).toBeLessThan(100_000)
+  expect(rows.length).toBeLessThan(5000)
+  expect(rows.at(-1).id).toBe('')
+  expect(rows.at(-1).left[0].t).toContain('more rows')
+  await ui.unmount()
+})
+
 async function scrolledTree($: any, on: any) {
   const root = '/home/k/big'
   const files = Array.from({ length: 60 }, (_, i) => [`f${String(i).padStart(2, '0')}.txt`, 'file'] as [string, 'file'])
