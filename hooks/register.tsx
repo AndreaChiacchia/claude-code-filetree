@@ -73,8 +73,11 @@ let blink: Timer | null = null
 let themePoll: Timer | null = null
 let ageTick: Timer | null = null
 let collapseTimer: Timer | null = null
+let collapseAt = 0
 let collapseMs = 1_000
+let collapseAfterTurn = false
 let turnRunning = false
+const touchedAt = new Map<string, number>()
 let themeMtime: number | null = null
 let generation = 0
 let lastPress = { key: '', at: 0 }
@@ -467,6 +470,8 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
   if (unique.length === 0) return
   const mine = ++generation
   const root = (await get($)).root
+  const now = await $.clock.now()
+  for (const id of unique) if (id !== BRANCH_ROW) for (const a of ancestorsOf(id, root)) touchedAt.set(a, now)
   blink?.cancel()
   blink = null
   await patch($, cur => {
@@ -505,7 +510,7 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
       ...keepTop(cur, [...open]),
     }
   })
-  scheduleCollapse($)
+  scheduleCollapse($, now, collapseAfterTurn ? collapseMs : FLASH_MS + collapseMs)
   if (generation !== mine) return
   blink = $.clock.after(FLASH_MS, () => {
     if (generation !== mine) return
@@ -515,13 +520,20 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
 }
 
 // With auto-collapse on, the folders Claude's activity opened close again a moment after Claude
-// is done: after its turn ends, or after activity that comes outside a turn (a background task).
+// is done with them: each one once its shimmer ends and the delay passes, or, timed after the turn,
+// all of them once the turn ends (or after activity outside a turn, such as a background task).
 // Folders the person opened, and the ones holding their selection, stay open.
-function scheduleCollapse($: EngineInterface): void {
+function scheduleCollapse($: EngineInterface, now: number, ms: number): void {
+  if (collapseAfterTurn && turnRunning) {
+    collapseTimer?.cancel()
+    collapseTimer = null
+    return
+  }
+  // After the turn, every new activity pushes the collapse back; per folder, an earlier one stands.
+  if (collapseTimer && !collapseAfterTurn && collapseAt <= now + ms) return
   collapseTimer?.cancel()
-  collapseTimer = null
-  if (turnRunning) return
-  collapseTimer = $.clock.after(collapseMs, () => {
+  collapseAt = now + ms
+  collapseTimer = $.clock.after(ms, () => {
     collapseTimer = null
     void collapseOpened($)
   })
@@ -530,14 +542,21 @@ function scheduleCollapse($: EngineInterface): void {
 async function collapseOpened($: EngineInterface): Promise<void> {
   const t = await get($)
   if (!t.autoCollapse || t.autoOpened.length === 0) return
-  if (t.flashOn) return scheduleCollapse($)
+  const now = await $.clock.now()
+  if (collapseAfterTurn && t.flashOn) return scheduleCollapse($, now, collapseMs)
+  const due = (id: string) => (collapseAfterTurn ? 0 : (touchedAt.get(id) ?? 0) + FLASH_MS + collapseMs)
+  let next = Infinity
   await patch($, cur => {
     if (!cur.autoCollapse) return {}
     const keep = new Set(cur.selected ? ancestorsOf(cur.selected, cur.root) : [])
-    const close = new Set(cur.autoOpened.filter(id => !keep.has(id)))
+    const close = new Set(cur.autoOpened.filter(id => !keep.has(id) && due(id) <= now))
+    for (const id of cur.autoOpened) if (!keep.has(id) && !close.has(id)) next = Math.min(next, due(id))
+    if (close.size === 0) return {}
+    for (const id of close) touchedAt.delete(id)
     const expanded = cur.expanded.filter(id => !close.has(id))
-    return { expanded, autoOpened: cur.autoOpened.filter(id => keep.has(id)), ...keepTop(cur, expanded) }
+    return { expanded, autoOpened: cur.autoOpened.filter(id => !close.has(id)), ...keepTop(cur, expanded) }
   })
+  if (next < Infinity) scheduleCollapse($, now, next - now)
 }
 
 async function followCwd($: EngineInterface): Promise<boolean> {
@@ -1080,7 +1099,7 @@ async function pressHeader($: EngineInterface, id: string): Promise<void> {
     const on = !t.autoCollapse
     await patch($, () => ({ autoCollapse: on }))
     await $.store.set(AUTO_COLLAPSE_KEY, on).catch(() => undefined)
-    if (on) scheduleCollapse($)
+    if (on) scheduleCollapse($, await $.clock.now(), collapseMs)
   }
   else if (id === 'unselect') await patch($, () => ({ selected: '' }))
   else if (id === 'external' && t.preview) await openFile($, t.preview, true)
@@ -1102,6 +1121,7 @@ export const register: Register = (on, options) => {
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
   noDock = options?.start === 'off'
   collapseMs = (Number.parseInt(typeof options?.collapseDelay === 'string' ? options.collapseDelay : '', 10) || 1) * 1000
+  collapseAfterTurn = options?.collapseWhen === 'after the turn'
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd)' })
     const windows = (await $.env.get('OS')) === 'Windows_NT'
@@ -1123,7 +1143,7 @@ export const register: Register = (on, options) => {
       ageTick = showAge ? $.clock.every(AGE_TICK_MS, () => $.ui.invalidate('ui.render')) : null
       const autoCollapse = (await $.store.get(AUTO_COLLAPSE_KEY).catch(() => undefined)) === true
       await patch($, () => ({ autoCollapse }))
-      if (autoCollapse) scheduleCollapse($)
+      if (autoCollapse) scheduleCollapse($, await $.clock.now(), collapseMs)
       const t = await get($)
       if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
       if (t.preview) await patch($, () => ({ preview: '', previewTop: 0 }))
@@ -1137,15 +1157,17 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     turnRunning = true
-    collapseTimer?.cancel()
-    collapseTimer = null
+    if (collapseAfterTurn) {
+      collapseTimer?.cancel()
+      collapseTimer = null
+    }
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) return next(e)
     turnRunning = false
-    scheduleCollapse($)
+    if (collapseAfterTurn) scheduleCollapse($, await $.clock.now(), collapseMs)
     return next(e)
   })
 

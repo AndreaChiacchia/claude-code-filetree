@@ -81,6 +81,16 @@
         "30s"
       ]
     },
+    "collapseWhen": {
+      "type": "string",
+      "title": "Auto-collapse timing",
+      "description": "With the auto-collapse header button on, when the folders Claude opened close. after activity: each folder closes on its own once its shimmer ends and the delay passes, even while Claude is still working. after the turn: they all close together once Claude's turn ends and the delay passes.",
+      "default": "after activity",
+      "options": [
+        "after activity",
+        "after the turn"
+      ]
+    },
     "hints": {
       "type": "string",
       "title": "Hints",

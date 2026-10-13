@@ -1255,7 +1255,7 @@ test('files a Grep or Glob search returns shimmer as reads, relative names resol
   await ui.unmount()
 })
 
-test('auto-collapse closes the folders Claude opened once its turn ends, and keeps the ones the person opened', { timeoutMs: 20_000 }, async ($, on) => {
+test('auto-collapse closes the folders Claude opened once its turn ends, and keeps the ones the person opened', { timeoutMs: 20_000, options: { collapseWhen: 'after the turn' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, {
@@ -1325,7 +1325,7 @@ test('auto-collapse stays on in the next session once turned on', { timeoutMs: 2
   await ui.unmount()
 })
 
-test('the auto-collapse delay setting holds the folders open that long', { timeoutMs: 20_000, options: { collapseDelay: '5s' } }, async ($, on) => {
+test('the auto-collapse delay setting holds the folders open that long', { timeoutMs: 20_000, options: { collapseDelay: '5s', collapseWhen: 'after the turn' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['sub', 'dir']], [`${root}/sub`]: [['b.ts', 'file']] }, status: '', numstat: '', store: { autoCollapse: true } }, ran)
@@ -1343,5 +1343,46 @@ test('the auto-collapse delay setting holds the folders open that long', { timeo
   expect(await texts(ui)).toContain(`"id":"${root}/sub/b.ts"`)
   await clock.advance(1_500)
   expect(await texts(ui)).not.toContain(`"id":"${root}/sub/b.ts"`)
+  await ui.unmount()
+})
+
+test('by default each folder Claude opened closes on its own once its shimmer ends, mid-turn', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, {
+    os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '',
+    dirs: { [root]: [['one', 'dir'], ['two', 'dir']], [`${root}/one`]: [['a.ts', 'file']], [`${root}/two`]: [['b.ts', 'file']] },
+    status: '', numstat: '', store: { autoCollapse: true },
+  }, ran)
+  on('turn.start', (_$: any, e: any) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await $.tool.call({ tool: 'Read', file_path: `${root}/one/a.ts` } as any)
+  await clock.settle()
+  await clock.advance(2_000)
+  await $.tool.call({ tool: 'Read', file_path: `${root}/two/b.ts` } as any)
+  await clock.settle()
+  expect(await texts(ui)).toContain(`"id":"${root}/one/a.ts"`)
+  await clock.advance(2_000)
+  let shown = await texts(ui)
+  expect(shown).not.toContain(`"id":"${root}/one/a.ts"`)
+  expect(shown).toContain(`"id":"${root}/two/b.ts"`)
+  await clock.advance(2_000)
+  shown = await texts(ui)
+  expect(shown).not.toContain(`"id":"${root}/two/b.ts"`)
+  await $.tool.call({ tool: 'Read', file_path: `${root}/one/a.ts` } as any)
+  await clock.settle()
+  await clock.advance(2_000)
+  await $.tool.call({ tool: 'Read', file_path: `${root}/one/a.ts` } as any)
+  await clock.settle()
+  await clock.advance(2_000)
+  expect(await texts(ui)).toContain(`"id":"${root}/one/a.ts"`)
+  await clock.advance(2_000)
+  expect(await texts(ui)).not.toContain(`"id":"${root}/one/a.ts"`)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as any)
   await ui.unmount()
 })
