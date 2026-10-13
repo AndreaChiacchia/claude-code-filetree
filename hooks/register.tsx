@@ -67,10 +67,14 @@ const SIZE_TIMEOUT_MS = 15_000
 const SIZE_JOBS = 2
 const SIZE_WALK_LIMIT = 50_000
 const AGE_TICK_MS = 60_000
+const AUTO_COLLAPSE_KEY = 'autoCollapse'
 
 let blink: Timer | null = null
 let themePoll: Timer | null = null
 let ageTick: Timer | null = null
+let collapseTimer: Timer | null = null
+let collapseMs = 5_000
+let turnRunning = false
 let themeMtime: number | null = null
 let generation = 0
 let lastPress = { key: '', at: 0 }
@@ -282,7 +286,7 @@ async function reset($: EngineInterface, root: string, focus = false): Promise<v
   searchIndex = null
   sizeEpoch += 1
   sizeQueue = []
-  await put($, () => ({ ...emptyTree(root), showHidden: prev.showHidden, showSize: prev.root ? prev.showSize : sizeDefault }))
+  await put($, () => ({ ...emptyTree(root), showHidden: prev.showHidden, showSize: prev.root ? prev.showSize : sizeDefault, autoCollapse: prev.autoCollapse }))
   const title = `Files: ${root.split('/').pop() || root}`
   if (focus) await $.ui.open({ id: PANE, title, focus: true })
   else if (!noDock) await $.ui.open({ id: PANE, title })
@@ -468,6 +472,7 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
   await patch($, cur => {
     if (cur.root !== root) return {}
     const open = new Set(cur.expanded)
+    const opened = new Set(cur.autoOpened)
     const bright = new Set([...(cur.flashOn ? cur.flash.filter(id => !unique.includes(id)) : []), ...unique])
     const dim = new Set<string>()
     const all: Record<string, string> = cur.flashOn ? { ...cur.flashTones } : {}
@@ -484,6 +489,7 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
         if (!open.has(a)) {
           dim.add(a)
           all[a] = all[a] ?? tone
+          opened.add(a)
         }
         open.add(a)
       }
@@ -495,14 +501,42 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
       flashOn: true,
       flashTones: all,
       expanded: [...open],
+      autoOpened: [...opened],
       ...keepTop(cur, [...open]),
     }
   })
+  scheduleCollapse($)
   if (generation !== mine) return
   blink = $.clock.after(FLASH_MS, () => {
     if (generation !== mine) return
     blink = null
     void patch($, cur => (generation === mine ? { flash: [], flashDim: [], flashOn: false, flashTones: {} } : {}))
+  })
+}
+
+// With auto-collapse on, the folders Claude's activity opened close again a moment after Claude
+// is done: after its turn ends, or after activity that comes outside a turn (a background task).
+// Folders the person opened, and the ones holding their selection, stay open.
+function scheduleCollapse($: EngineInterface): void {
+  collapseTimer?.cancel()
+  collapseTimer = null
+  if (turnRunning) return
+  collapseTimer = $.clock.after(collapseMs, () => {
+    collapseTimer = null
+    void collapseOpened($)
+  })
+}
+
+async function collapseOpened($: EngineInterface): Promise<void> {
+  const t = await get($)
+  if (!t.autoCollapse || t.autoOpened.length === 0) return
+  if (t.flashOn) return scheduleCollapse($)
+  await patch($, cur => {
+    if (!cur.autoCollapse) return {}
+    const keep = new Set(cur.selected ? ancestorsOf(cur.selected, cur.root) : [])
+    const close = new Set(cur.autoOpened.filter(id => !keep.has(id)))
+    const expanded = cur.expanded.filter(id => !close.has(id))
+    return { expanded, autoOpened: cur.autoOpened.filter(id => keep.has(id)), ...keepTop(cur, expanded) }
   })
 }
 
@@ -787,7 +821,8 @@ async function reveal($: EngineInterface, paths: string[]): Promise<void> {
   await patch($, cur => {
     const open = new Set(cur.expanded)
     for (const p of paths) for (const a of ancestorsOf(p, cur.root)) open.add(a)
-    return { expanded: [...open], cursor: paths[paths.length - 1] ?? cur.cursor, scroll: null }
+    const mine = new Set(paths.flatMap(p => ancestorsOf(p, cur.root)))
+    return { expanded: [...open], autoOpened: cur.autoOpened.filter(id => !mine.has(id)), cursor: paths[paths.length - 1] ?? cur.cursor, scroll: null }
   })
 }
 
@@ -859,7 +894,8 @@ async function jump($: EngineInterface, query: string): Promise<void> {
   await patch($, cur => {
     const open = new Set(cur.expanded)
     for (const p of hits) for (const a of ancestorsOf(p, cur.root)) open.add(a)
-    return { query: '', expanded: [...open], cursor: hits[0] ?? cur.cursor, scroll: null }
+    const mine = new Set(hits.flatMap(p => ancestorsOf(p, cur.root)))
+    return { query: '', expanded: [...open], autoOpened: cur.autoOpened.filter(id => !mine.has(id)), cursor: hits[0] ?? cur.cursor, scroll: null }
   })
 }
 
@@ -985,7 +1021,7 @@ async function toggle($: EngineInterface, n: FileNode): Promise<void> {
   await patch($, t => {
     const open = new Set(t.expanded)
     if (n.kind === 'dir') open.has(n.id) ? open.delete(n.id) : open.add(n.id)
-    return { expanded: [...open], cursor: n.id, selected: n.kind === 'dir' ? t.selected : n.id }
+    return { expanded: [...open], autoOpened: t.autoOpened.filter(id => id !== n.id), cursor: n.id, selected: n.kind === 'dir' ? t.selected : n.id }
   })
 }
 
@@ -1039,7 +1075,13 @@ async function pressHeader($: EngineInterface, id: string): Promise<void> {
     if (t.query.trim()) await search($, t.query)
   } else if (id === 'hidden') await patch($, cur => ({ showHidden: !cur.showHidden }))
   else if (id === 'size') await patch($, cur => ({ showSize: !cur.showSize }))
-  else if (id === 'collapse') await patch($, cur => ({ expanded: [], nodes: dropBelow(cur.nodes, cur.nodes.filter(x => x.parent === cur.root && x.kind === 'dir').map(x => x.id)) }))
+  else if (id === 'collapse') await patch($, cur => ({ expanded: [], autoOpened: [], nodes: dropBelow(cur.nodes, cur.nodes.filter(x => x.parent === cur.root && x.kind === 'dir').map(x => x.id)) }))
+  else if (id === 'autocollapse') {
+    const on = !t.autoCollapse
+    await patch($, () => ({ autoCollapse: on }))
+    await $.store.set(AUTO_COLLAPSE_KEY, on).catch(() => undefined)
+    if (on) scheduleCollapse($)
+  }
   else if (id === 'unselect') await patch($, () => ({ selected: '' }))
   else if (id === 'external' && t.preview) await openFile($, t.preview, true)
 }
@@ -1059,6 +1101,7 @@ export const register: Register = (on, options) => {
   showHints = options?.hints !== 'off'
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
   noDock = options?.start === 'off'
+  collapseMs = (Number.parseInt(typeof options?.collapseDelay === 'string' ? options.collapseDelay : '', 10) || 5) * 1000
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd)' })
     const windows = (await $.env.get('OS')) === 'Windows_NT'
@@ -1078,6 +1121,9 @@ export const register: Register = (on, options) => {
       themePoll = themeMtime ? $.clock.every(THEME_POLL_MS, () => void loadTheme($)) : null
       ageTick?.cancel()
       ageTick = showAge ? $.clock.every(AGE_TICK_MS, () => $.ui.invalidate('ui.render')) : null
+      const autoCollapse = (await $.store.get(AUTO_COLLAPSE_KEY).catch(() => undefined)) === true
+      await patch($, () => ({ autoCollapse }))
+      if (autoCollapse) scheduleCollapse($)
       const t = await get($)
       if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
       if (t.preview) await patch($, () => ({ preview: '', previewTop: 0 }))
@@ -1086,6 +1132,20 @@ export const register: Register = (on, options) => {
       if (!t.root || t.nodes.length === 0 || (follow && t.root !== cwd)) await reset($, cwd)
       else if (!noDock) await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
     })()
+    return next(e)
+  })
+
+  on('turn.start', async ($, e, next) => {
+    turnRunning = true
+    collapseTimer?.cancel()
+    collapseTimer = null
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId) return next(e)
+    turnRunning = false
+    scheduleCollapse($)
     return next(e)
   })
 
@@ -1414,6 +1474,7 @@ export const register: Register = (on, options) => {
       { id: 'hidden', label: unicode ? (t.showHidden ? '◉' : '○') : t.showHidden ? '\u{f0208}' : '\u{f0209}', dim: !t.showHidden, hint: t.showHidden ? 'hide hidden files' : 'show hidden files' },
       { id: 'size', label: unicode ? 'Σ' : '\u{f02ca}', dim: !t.showSize, hint: t.showSize ? 'show dates' : 'show sizes' },
       { id: 'collapse', label: unicode ? '⊟' : '\u{eac5}', dim: true, hint: 'collapse all' },
+      { id: 'autocollapse', label: unicode ? '⊡' : '\u{f0615}', dim: !t.autoCollapse, hint: t.autoCollapse ? "stop closing Claude's folders" : "close Claude's folders when it's done" },
       ...(t.selected ? [{ id: 'unselect', label: unicode ? '⊘' : '\u{f0777}', dim: false, hint: 'clear selection' }] : []),
     ]
     const header = t.top ? [t.top.split('/').pop() ?? t.top, t.prefix.replace(/\/$/, '')].filter(Boolean).join('/') : t.root.split('/').pop() || t.root

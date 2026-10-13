@@ -23,6 +23,7 @@ type World = {
   links?: string[]
   files?: Record<string, string>
   mtimes?: Record<string, number>
+  store?: Record<string, unknown>
 }
 type Ran = string[][]
 const opens: unknown[] = []
@@ -31,7 +32,7 @@ const envs: Record<string, string>[] = []
 function world(on: any, w: World, ran: Ran) {
   mock.env(on, w.env)
   const clock = mock.clock(on, { now: 1_800_000_000_000 })
-  mock.store(on)
+  mock.store(on, w.store)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: w.cwd }))
   on('session.id', () => ({ value: 'test-session' }))
@@ -1251,5 +1252,75 @@ test('files a Grep or Glob search returns shimmer as reads, relative names resol
   await $.tool.call({ tool: 'Glob', pattern: '*.ts' } as any)
   await clock.settle()
   expect(await texts(ui)).toContain(shimmer('a.ts', 'purple'))
+  await ui.unmount()
+})
+
+test('auto-collapse closes the folders Claude opened once its turn ends, and keeps the ones the person opened', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, {
+    os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '',
+    dirs: { [root]: [['sub', 'dir'], ['mine', 'dir'], ['a.ts', 'file']], [`${root}/sub`]: [['deep', 'dir']], [`${root}/sub/deep`]: [['b.ts', 'file']], [`${root}/mine`]: [['c.ts', 'file']] },
+    status: '', numstat: '',
+  }, ran)
+  on('turn.start', (_$: any, e: any) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
+  const turn = async (id: string, work: () => Promise<unknown>) => {
+    await $.turn.start({ text: 'go', turnId: id })
+    await work()
+    await clock.settle()
+    await clock.advance(10_000)
+    expect(await texts(ui)).toContain(`"id":"${root}/sub/deep/b.ts"`)
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: id, reason: 'answer' } as any)
+  }
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+
+  await turn('t0', () => $.tool.call({ tool: 'Read', file_path: `${root}/sub/deep/b.ts` } as any))
+  await clock.advance(30_000)
+  expect(await texts(ui)).toContain(`"id":"${root}/sub/deep/b.ts"`)
+
+  await ui.press({ key: 'collapse' })
+  await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-autocollapse' })
+  await clock.settle()
+  expect(await texts(ui)).toContain(`"close Claude's folders when it's done "`)
+  await ui.press({ key: 'autocollapse' })
+  await clock.settle()
+  expect(await texts(ui)).toContain(`"stop closing Claude's folders "`)
+  await ui.pointer({ type: 'leave', x: 0, y: 0, in: 'button-autocollapse' })
+
+  await ui.post({ press: `${root}/mine` }, { in: 'rows' })
+  await clock.settle()
+  expect(await texts(ui)).toContain(`"id":"${root}/mine/c.ts"`)
+
+  await turn('t1', () => $.tool.call({ tool: 'Read', file_path: `${root}/sub/deep/b.ts` } as any))
+  await clock.advance(4_000)
+  expect(await texts(ui)).toContain(`"id":"${root}/sub/deep/b.ts"`)
+  await clock.advance(4_000)
+  const shown = await texts(ui)
+  expect(shown).not.toContain(`"id":"${root}/sub/deep/b.ts"`)
+  expect(shown).not.toContain(`"id":"${root}/sub/deep"`)
+  expect(shown).toContain(`"id":"${root}/mine/c.ts"`)
+
+  await turn('t2', () => $.tool.call({ tool: 'Read', file_path: `${root}/sub/deep/b.ts` } as any))
+  await ui.post({ press: `${root}/sub/deep/b.ts` }, { in: 'rows' })
+  await clock.advance(10_000)
+  expect(await texts(ui)).toContain(`"id":"${root}/sub/deep/b.ts"`)
+  await ui.unmount()
+})
+
+test('auto-collapse stays on in the next session once turned on', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']] }, status: '', numstat: '', store: { autoCollapse: true } }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-autocollapse' })
+  await clock.settle()
+  expect(await texts(ui)).toContain(`"stop closing Claude's folders "`)
   await ui.unmount()
 })
