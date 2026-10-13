@@ -74,7 +74,7 @@ let themePoll: Timer | null = null
 let ageTick: Timer | null = null
 let collapseTimer: Timer | null = null
 let collapseAt = 0
-let collapseMs = 1_000
+let collapseMs = 500
 let collapseAfterTurn = false
 let turnRunning = false
 const touchedAt = new Map<string, number>()
@@ -1120,7 +1120,7 @@ export const register: Register = (on, options) => {
   showHints = options?.hints !== 'off'
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
   noDock = options?.start === 'off'
-  collapseMs = (Number.parseInt(typeof options?.collapseDelay === 'string' ? options.collapseDelay : '', 10) || 1) * 1000
+  collapseMs = Math.round((Number.parseFloat(typeof options?.collapseDelay === 'string' ? options.collapseDelay : '') || 0.5) * 1000)
   collapseAfterTurn = options?.collapseWhen === 'after the turn'
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd)' })

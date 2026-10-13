@@ -72,8 +72,9 @@
       "type": "string",
       "title": "Auto-collapse delay",
       "description": "With the auto-collapse header button on, how long after Claude finishes the folders its activity opened close again. Folders you opened yourself, and the ones holding your selection, stay open.",
-      "default": "1s",
+      "default": "0.5s",
       "options": [
+        "0.5s",
         "1s",
         "2s",
         "5s",

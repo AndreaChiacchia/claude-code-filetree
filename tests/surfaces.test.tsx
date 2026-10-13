@@ -1296,9 +1296,9 @@ test('auto-collapse closes the folders Claude opened once its turn ends, and kee
   expect(await texts(ui)).toContain(`"id":"${root}/mine/c.ts"`)
 
   await turn('t1', () => $.tool.call({ tool: 'Read', file_path: `${root}/sub/deep/b.ts` } as any))
-  await clock.advance(500)
+  await clock.advance(250)
   expect(await texts(ui)).toContain(`"id":"${root}/sub/deep/b.ts"`)
-  await clock.advance(1_000)
+  await clock.advance(500)
   const shown = await texts(ui)
   expect(shown).not.toContain(`"id":"${root}/sub/deep/b.ts"`)
   expect(shown).not.toContain(`"id":"${root}/sub/deep"`)
