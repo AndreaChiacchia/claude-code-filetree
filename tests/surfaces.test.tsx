@@ -1255,7 +1255,7 @@ test('files a Grep or Glob search returns shimmer as reads, relative names resol
   await ui.unmount()
 })
 
-test('auto-collapse closes the folders Claude opened once its turn ends, and keeps the ones the person opened', { timeoutMs: 20_000, options: { collapseWhen: 'after the turn' } }, async ($, on) => {
+test('auto-collapse closes the folders Claude opened once its turn ends, and keeps the ones the person opened', { timeoutMs: 20_000, options: { collapseDelay: '0.5s', collapseWhen: 'after the turn' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, {
