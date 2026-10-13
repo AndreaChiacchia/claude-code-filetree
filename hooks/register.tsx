@@ -970,6 +970,14 @@ async function openFile($: EngineInterface, path: string, external = false): Pro
   }
 }
 
+async function quickLook($: EngineInterface, path: string): Promise<void> {
+  try {
+    await $.process.run(['sh', '-c', '(nohup qlmanage -p "$1" >/dev/null 2>&1 &); sleep 0.4; osascript -e \'tell application "System Events" to set frontmost of first process whose name is "qlmanage" to true\' >/dev/null 2>&1 || true', 'sh', path], { timeoutMs: 10_000 })
+  } catch {
+    $.ui.toast(`could not preview ${path} with Quick Look`)
+  }
+}
+
 async function toggle($: EngineInterface, n: FileNode): Promise<void> {
   if (n.kind === 'dir' && !(await get($)).expanded.includes(n.id)) await loadDirs($, [n.id])
   await patch($, t => {
@@ -1178,7 +1186,7 @@ export const register: Register = (on, options) => {
       if (cur.kind === 'dir' && t.expanded.includes(cur.id)) await toggle($, cur)
       else if (cur.parent !== t.root) await patch($, () => ({ cursor: cur.parent }))
     } else if (cur && data.key === 'return') await (cur.kind !== 'dir' ? openNode($, cur) : toggle($, cur))
-    else if (cur && data.key === ' ') await toggle($, cur)
+    else if (cur && (data.key === ' ' || data.key === 'space')) await (cur.kind !== 'dir' && (await osName($)) === 'darwin' ? quickLook($, cur.id) : toggle($, cur))
     return {}
   })
 

@@ -529,6 +529,28 @@ test('opener failures show a toast instead of failing silently', { timeoutMs: 20
   await ui.unmount()
 })
 
+test('macOS: space on a file opens Quick Look, space on a folder still toggles it', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/Users/k/proj'
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: '', dirs: { [root]: [['a b.png', 'file'], ['sub', 'dir']], [`${root}/sub`]: [['c.txt', 'file']] }, status: '', numstat: '' }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await ui.post({ press: `${root}/a b.png` }, { in: 'rows' })
+  await clock.settle()
+  await ui.post({ key: ' ' }, { in: 'rows' })
+  await clock.settle()
+  const look = ran.find(a => a[0] === 'sh' && (a[2] ?? '').includes('qlmanage -p'))
+  expect(look?.at(-1)).toBe(`${root}/a b.png`)
+  expect(ran.some(a => a[0] === 'open')).toBe(false)
+  await ui.post({ press: `${root}/sub` }, { in: 'rows' })
+  await clock.settle()
+  await ui.post({ key: ' ' }, { in: 'rows' })
+  await clock.settle()
+  expect(ran.filter(a => a[0] === 'sh' && (a[2] ?? '').includes('qlmanage')).length).toBe(1)
+  await ui.unmount()
+})
+
 test('open with: a double-click and Enter run the configured command instead of the default app', { timeoutMs: 20_000, options: { open: 'glow -p {path} --dir "{dir}"' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/Users/k/my proj'
