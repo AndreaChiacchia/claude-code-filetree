@@ -1218,3 +1218,38 @@ for (const os of ['linux', 'win32'] as const) {
     await ui.unmount()
   })
 }
+
+test('Windows: a commit run through the PowerShell tool shows as git activity', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = 'C:/Users/k/proj'
+  const w: World = { os: 'win32', env: { OS: 'Windows_NT', USERPROFILE: 'C:\Users\k' }, cwd: 'C:\Users\k\proj', top: root, dirs: { [root]: [['a.txt', 'file']] }, status: '## main\0', numstat: '', heads: ['abc1234def0', 'fed4321cba9'] }
+  const clock = world(on, w, ran)
+  await $.session.start({ cwd: 'C:\Users\k\proj', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await $.tool.call({ tool: 'PowerShell', command: 'git commit -m real' } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain('committed')
+  expect(shown).toContain('fed4321')
+  await ui.unmount()
+})
+
+test('files a Grep or Glob search returns shimmer as reads, relative names resolved against the cwd', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file'], ['sub', 'dir']], [`${root}/sub`]: [['b.ts', 'file']] }, status: '', numstat: '' }
+  w.tool = e => (e.tool === 'Grep' ? { result: { numFiles: 1, filenames: ['sub/b.ts'] } } : e.tool === 'Glob' ? { result: { numFiles: 1, filenames: [`${root}/a.ts`] } } : undefined)
+  const clock = world(on, w, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  await $.tool.call({ tool: 'Grep', pattern: 'x' } as any)
+  await clock.settle()
+  expect(await texts(ui)).toContain(shimmer('b.ts', 'purple'))
+  await $.tool.call({ tool: 'Glob', pattern: '*.ts' } as any)
+  await clock.settle()
+  expect(await texts(ui)).toContain(shimmer('a.ts', 'purple'))
+  await ui.unmount()
+})

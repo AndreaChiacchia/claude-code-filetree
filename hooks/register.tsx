@@ -1105,12 +1105,13 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
-    if (e.tool !== 'Edit' && e.tool !== 'Write' && e.tool !== 'NotebookEdit' && e.tool !== 'Bash') return next(e)
-    const command = e.tool === 'Bash' ? e.command : ''
-    const cwd = e.tool === 'Bash' ? await cwdOf($) : ''
+    const shell = e.tool === 'Bash' || e.tool === 'PowerShell'
+    if (e.tool !== 'Edit' && e.tool !== 'Write' && e.tool !== 'NotebookEdit' && !shell) return next(e)
+    const command = e.tool === 'Bash' || e.tool === 'PowerShell' ? e.command : ''
+    const cwd = shell ? await cwdOf($) : ''
     const actions = gitActions(command)
     const quiet = !actions.length && readOnly(command)
-    const since = await sinceNow($, e.tool === 'Bash' && !quiet)
+    const since = await sinceNow($, shell && !quiet)
     const before = actions.some(a => a.verb === 'commit') ? await get($) : null
     const head = before?.top ? await headOf($, before.root) : ''
     const pending: Pending | null = actions.length ? { actions, ids: await startGit($, actions), command, head } : null
@@ -1126,12 +1127,12 @@ export const register: Register = (on, options) => {
       const ids = pending.ids
       void setActivities($, cur => cur.filter(a => !ids.includes(a.id)))
     }
-    if (result.deny || (result.isError && e.tool !== 'Bash')) {
+    if (result.deny || (result.isError && !shell)) {
       if (since.mark) void $.process.run(['rm', '-f', since.mark], { timeoutMs: 3_000 }).catch(() => undefined)
       return result
     }
-    if (e.tool === 'Bash') {
-      const out: Partial<BuiltinToolResults['Bash']> = !result.isError && result.result && typeof result.result === 'object' ? result.result : {}
+    if (shell) {
+      const out: Partial<BuiltinToolResults['Bash']> = !result.isError && result.result && typeof result.result === 'object' ? (result.result as Partial<BuiltinToolResults['Bash']>) : {}
       const reads = showReads ? readTargets(command, cwd, typeof out.stdout === 'string' ? out.stdout : '', home) : []
       const job: Job = { actions: [], since, initRepo: actions.some(a => a.init), readOnly: quiet || result.isReadOnly === true }
       if (out.backgroundTaskId) background.set(out.backgroundTaskId, { p: pending, job, reads })
@@ -1160,6 +1161,17 @@ export const register: Register = (on, options) => {
     void touched($, [posix(e.file_path)], 'purple', true)
     return result
   })
+
+  for (const tool of ['Grep', 'Glob'] as const)
+    on('tool.call', { tool }, async ($, e, next) => {
+      const result = await next(e)
+      if (result.deny || result.isError || !showReads) return result
+      const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
+      if (!Array.isArray(names) || names.length === 0) return result
+      const cwd = await cwdOf($)
+      void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', true)
+      return result
+    })
 
   on('ui.message', async ($, e, next) => {
     if (e.requestId === PANE && e.element.startsWith('button-') && e.data && typeof e.data === 'object') {
