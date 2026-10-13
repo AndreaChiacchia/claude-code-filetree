@@ -71,9 +71,10 @@
     "collapseDelay": {
       "type": "string",
       "title": "Auto-collapse delay",
-      "description": "With the auto-collapse header button on, how long after Claude finishes the folders its activity opened close again. Folders you opened yourself, and the ones holding your selection, stay open.",
+      "description": "With the auto-collapse header button on, how long after Claude finishes the folders its activity opened close again; instant closes them as soon as Claude is done (with after activity timing, as the shimmer ends). Folders you opened yourself, and the ones holding your selection, stay open.",
       "default": "0.5s",
       "options": [
+        "instant",
         "0.5s",
         "1s",
         "2s",

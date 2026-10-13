@@ -1386,3 +1386,45 @@ test('by default each folder Claude opened closes on its own once its shimmer en
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as any)
   await ui.unmount()
 })
+
+test('instant auto-collapse closes the folder as soon as Claude is done with it (after activity)', { timeoutMs: 20_000, options: { collapseDelay: 'instant', collapseWhen: 'after activity' } }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['sub', 'dir']], [`${root}/sub`]: [['b.ts', 'file']] }, status: '', numstat: '', store: { autoCollapse: true } }, ran)
+  on('turn.start', (_$: any, e: any) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await $.tool.call({ tool: 'Read', file_path: `${root}/sub/b.ts` } as any)
+  await clock.settle()
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as any)
+  await clock.advance(2_600)
+  expect(await texts(ui)).toContain(`"id":"${root}/sub/b.ts"`)
+  await clock.advance(400)
+  expect(await texts(ui)).not.toContain(`"id":"${root}/sub/b.ts"`)
+  await ui.unmount()
+})
+
+test('instant auto-collapse closes the folder as soon as Claude is done with it (after the turn)', { timeoutMs: 20_000, options: { collapseDelay: 'instant', collapseWhen: 'after the turn' } }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['sub', 'dir']], [`${root}/sub`]: [['b.ts', 'file']] }, status: '', numstat: '', store: { autoCollapse: true } }, ran)
+  on('turn.start', (_$: any, e: any) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await $.tool.call({ tool: 'Read', file_path: `${root}/sub/b.ts` } as any)
+  await clock.settle()
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as any)
+  await clock.advance(2_600)
+  expect(await texts(ui)).toContain(`"id":"${root}/sub/b.ts"`)
+  await clock.advance(400)
+  expect(await texts(ui)).not.toContain(`"id":"${root}/sub/b.ts"`)
+  await ui.unmount()
+})

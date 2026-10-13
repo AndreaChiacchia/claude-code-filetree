@@ -543,7 +543,7 @@ async function collapseOpened($: EngineInterface): Promise<void> {
   const t = await get($)
   if (!t.autoCollapse || t.autoOpened.length === 0) return
   const now = await $.clock.now()
-  if (collapseAfterTurn && t.flashOn) return scheduleCollapse($, now, collapseMs)
+  if (collapseAfterTurn && t.flashOn) return scheduleCollapse($, now, Math.max(collapseMs, 250))
   const due = (id: string) => (collapseAfterTurn ? 0 : (touchedAt.get(id) ?? 0) + FLASH_MS + collapseMs)
   let next = Infinity
   await patch($, cur => {
@@ -1120,7 +1120,7 @@ export const register: Register = (on, options) => {
   showHints = options?.hints !== 'off'
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
   noDock = options?.start === 'off'
-  collapseMs = Math.round((Number.parseFloat(typeof options?.collapseDelay === 'string' ? options.collapseDelay : '') || 0.5) * 1000)
+  collapseMs = options?.collapseDelay === 'instant' ? 0 : Math.round((Number.parseFloat(typeof options?.collapseDelay === 'string' ? options.collapseDelay : '') || 0.5) * 1000)
   collapseAfterTurn = options?.collapseWhen === 'after the turn'
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd)' })
