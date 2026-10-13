@@ -1296,9 +1296,9 @@ test('auto-collapse closes the folders Claude opened once its turn ends, and kee
   expect(await texts(ui)).toContain(`"id":"${root}/mine/c.ts"`)
 
   await turn('t1', () => $.tool.call({ tool: 'Read', file_path: `${root}/sub/deep/b.ts` } as any))
-  await clock.advance(4_000)
+  await clock.advance(500)
   expect(await texts(ui)).toContain(`"id":"${root}/sub/deep/b.ts"`)
-  await clock.advance(4_000)
+  await clock.advance(1_000)
   const shown = await texts(ui)
   expect(shown).not.toContain(`"id":"${root}/sub/deep/b.ts"`)
   expect(shown).not.toContain(`"id":"${root}/sub/deep"`)
@@ -1322,5 +1322,26 @@ test('auto-collapse stays on in the next session once turned on', { timeoutMs: 2
   await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-autocollapse' })
   await clock.settle()
   expect(await texts(ui)).toContain(`"stop closing Claude's folders "`)
+  await ui.unmount()
+})
+
+test('the auto-collapse delay setting holds the folders open that long', { timeoutMs: 20_000, options: { collapseDelay: '5s' } }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['sub', 'dir']], [`${root}/sub`]: [['b.ts', 'file']] }, status: '', numstat: '', store: { autoCollapse: true } }, ran)
+  on('turn.start', (_$: any, e: any) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await $.tool.call({ tool: 'Read', file_path: `${root}/sub/b.ts` } as any)
+  await clock.advance(5_000)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as any)
+  await clock.advance(4_000)
+  expect(await texts(ui)).toContain(`"id":"${root}/sub/b.ts"`)
+  await clock.advance(1_500)
+  expect(await texts(ui)).not.toContain(`"id":"${root}/sub/b.ts"`)
   await ui.unmount()
 })
