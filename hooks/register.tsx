@@ -6,6 +6,7 @@ import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets
 import type { RowSpec, RowsProps, Seg } from './rows'
 import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from './icons'
 import {
+  age,
   ancestorsOf,
   type Change,
   DEFAULT_THEME,
@@ -64,9 +65,11 @@ const HOME_PRUNE = ['Library', 'AppData', '.Trash']
 const SIZE_TIMEOUT_MS = 15_000
 const SIZE_JOBS = 2
 const SIZE_WALK_LIMIT = 50_000
+const AGE_TICK_MS = 60_000
 
 let blink: Timer | null = null
 let themePoll: Timer | null = null
+let ageTick: Timer | null = null
 let themeMtime: number | null = null
 let generation = 0
 let lastPress = { key: '', at: 0 }
@@ -98,6 +101,8 @@ let markId = 0
 let listSeq = 0
 let lastRoot = ''
 let sizeDefault = false
+let showAge = false
+let showHints = true
 let sizeEpoch = 0
 let sizeActive = 0
 let sizeQueue: string[] = []
@@ -1018,6 +1023,8 @@ export const register: Register = (on, options) => {
   showWrites = activity.includes('writes')
   followClaude = options?.follow !== 'off'
   sizeDefault = options?.column === 'size'
+  showAge = options?.column === 'age'
+  showHints = options?.hints !== 'off'
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
   noDock = options?.start === 'off'
   on('session.start', async ($, e, next) => {
@@ -1037,6 +1044,8 @@ export const register: Register = (on, options) => {
       await loadTheme($)
       themePoll?.cancel()
       themePoll = themeMtime ? $.clock.every(THEME_POLL_MS, () => void loadTheme($)) : null
+      ageTick?.cancel()
+      ageTick = showAge ? $.clock.every(AGE_TICK_MS, () => $.ui.invalidate('ui.render')) : null
       const t = await get($)
       if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
       if (t.preview) await patch($, () => ({ preview: '', previewTop: 0 }))
@@ -1301,7 +1310,7 @@ export const register: Register = (on, options) => {
     const untracked = new Set(t.untrackedDirs)
     const width = Math.max(24, e.props.bodyColumns)
     const rows = visibleRows(t)
-    const fixed = 2 + (t.top ? (t.branch ? 1 : 0) : 1) + (t.selected || latest ? 1 : 0)
+    const fixed = 2 + (t.top ? (t.branch ? 1 : 0) : showHints ? 1 : 0) + (t.selected || latest ? 1 : 0)
     const room = nativeScroll ? Math.max(1, rows.length) : Math.max(5, (e.props.scroll?.bodyRows ?? 40) - fixed)
     const isLit = (id: string) => bright.has(id) || dimmed.has(id)
     const focus = followClaude && t.flashOn ? ([...t.flash].reverse().find(id => id !== BRANCH_ROW) ?? t.cursor) : t.cursor
@@ -1358,7 +1367,9 @@ export const register: Register = (on, options) => {
         : loc
           ? ''
           : n.kind === 'file'
-            ? stamp(n.mtime)
+            ? showAge
+              ? age(n.mtime, now)
+              : stamp(n.mtime)
             : ''
       const locText = loc ? `${loc[0] ? ` +${loc[0]}` : ''}${loc[1] ? ` -${loc[1]}` : ''}` : ''
       const dirCounts = n.kind === 'dir' ? countSegs(t.counts[n.id]) : []
@@ -1526,7 +1537,7 @@ export const register: Register = (on, options) => {
           </Box>
         </Box>
         {branchRow()}
-        {!t.top && <Text color={theme.muted}>{unicode ? '± ' : '\u{e702} '}no git repo · git status starts after git init</Text>}
+        {!t.top && showHints && <Text color={theme.muted}>{unicode ? '± ' : '\u{e702} '}no git repo · git status starts after git init</Text>}
         <Box flexDirection="row">
           <Box flexGrow={1}>
             <Input

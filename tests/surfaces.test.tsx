@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { LINUX_LAUNCH } from '../hooks/open'
-import { ancestorsOf, formatSize, replaceChildren, toNodes } from '../hooks/tree'
+import { age, ancestorsOf, formatSize, replaceChildren, toNodes } from '../hooks/tree'
 
 type World = {
   os: 'darwin' | 'linux' | 'win32'
@@ -22,6 +22,7 @@ type World = {
   duDelays?: number[]
   links?: string[]
   files?: Record<string, string>
+  mtimes?: Record<string, number>
 }
 type Ran = string[][]
 const opens: unknown[] = []
@@ -58,7 +59,7 @@ function world(on: any, w: World, ran: Ran) {
     if (w.denied?.includes(bare)) return { deny: `EACCES: permission denied, scandir '${path}'` }
     const kids = dirOf(path)
     if (!kids) throw new Error(`ENOENT ${e.path}`)
-    const value = kids.map(([name, kind]) => ({ name, kind, size: 1, mtimeMs: 1_700_000_000_000, isLink: w.links?.includes(`${bare}/${name}`) ?? false }))
+    const value = kids.map(([name, kind]) => ({ name, kind, size: 1, mtimeMs: w.mtimes?.[`${bare}/${name}`] ?? 1_700_000_000_000, isLink: w.links?.includes(`${bare}/${name}`) ?? false }))
     const delay = w.delays?.[bare]?.shift()
     if (delay) await clock.sleep(delay)
     return { value }
@@ -981,6 +982,22 @@ test('formatSize: bytes, binary units, one decimal under 100, ? for unknown', as
   expect(formatSize(-1)).toBe('?')
 })
 
+test('age: now, minutes, hours and days, then the day past a week and the year past a year', async () => {
+  const now = new Date(2026, 9, 12, 10, 42).getTime()
+  const ago = (s: number) => now - s * 1000
+  expect(age(0, now)).toBe('')
+  expect(age(ago(30), now)).toBe('now')
+  expect(age(now + 20_000, now)).toBe('now')
+  expect(age(ago(12 * 60), now)).toBe('12m')
+  expect(age(ago(3600 - 1), now)).toBe('59m')
+  expect(age(ago(3 * 3600 + 59), now)).toBe('3h')
+  expect(age(ago(5 * 86_400), now)).toBe('5d')
+  expect(age(new Date(2026, 9, 3, 9).getTime(), now)).toBe('Oct 3')
+  expect(age(new Date(2025, 10, 20).getTime(), now)).toBe('Nov 20')
+  expect(age(new Date(2025, 9, 9).getTime(), now)).toBe('2025')
+  expect(age(new Date(2027, 0, 1).getTime(), now)).toBe('Jan 1')
+})
+
 test('size column: the toggle swaps dates for sizes, folders are sized with du, an edit re-sizes its folders', { timeoutMs: 20_000 }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
@@ -1072,6 +1089,55 @@ test('on Windows a folder size does not walk into linked folders, like du', { ti
   expect(shown).not.toContain(' 6 B')
   await ui.unmount()
 })
+
+test('age column: files show how long ago they changed, the toggle swaps ages for sizes and back, and the ages move on with the clock', { timeoutMs: 20_000, options: { column: 'age' } }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const now = 1_800_000_000_000
+  const clock = world(on, {
+    os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root,
+    dirs: { [root]: [['fresh.md', 'file'], ['recent.ts', 'file'], ['README.md', 'file']] },
+    mtimes: { [`${root}/fresh.md`]: now - 30_000, [`${root}/recent.ts`]: now - 12 * 60_000 },
+    status: '## main\0', numstat: '',
+  }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  let shown = await texts(ui)
+  expect(shown).not.toMatch(STAMP)
+  for (const label of [' now', ' 12m', ' 2023']) expect(shown).toContain(label)
+  await ui.press({ key: 'size' })
+  await clock.settle()
+  shown = await texts(ui)
+  expect(shown).toContain(' 1 B')
+  expect(shown).not.toContain(' 12m')
+  await ui.press({ key: 'size' })
+  await clock.settle()
+  expect(await texts(ui)).toContain(' 12m')
+  await clock.advance(3 * 60_000)
+  await clock.settle()
+  shown = await texts(ui)
+  expect(shown).toContain(' 3m')
+  expect(shown).toContain(' 15m')
+  await ui.unmount()
+})
+
+for (const hints of ['on', 'off'] as const) {
+  test(`hints ${hints}: outside a repo the git init line ${hints === 'on' ? 'shows' : 'is hidden and the tree takes its row'}`, { timeoutMs: 20_000, options: { hints } }, async ($, on) => {
+    const root = '/home/k/big'
+    const names = Array.from({ length: 60 }, (_, i) => [`f${String(i).padStart(2, '0')}.txt`, 'file'] as [string, 'file'])
+    const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: names }, status: '', numstat: '' }, [])
+    await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: { ...paneProps(60), scroll: { offset: 0, bodyRows: 20 } } })
+    await clock.settle()
+    const drawn = (await ui.drawn()) as any
+    expect(JSON.stringify(drawn).includes('git init')).toBe(hints === 'on')
+    expect(drawn.children.find((c: any) => c.type === 'Client').props.props.rows.length).toBe(hints === 'on' ? 17 : 18)
+    await ui.unmount()
+  })
+}
 
 for (const os of ['linux', 'win32'] as const) {
   test(`${os}: a failed file opener is visible`, { timeoutMs: 20_000 }, async ($, on) => {
