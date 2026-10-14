@@ -38,6 +38,8 @@ Or inside a Claude Code session:
 
 Installed it as `filetree@filetree` before the repository was renamed? Nothing to do: that install keeps loading and keeps receiving updates.
 
+Install fails with `Unrecognized key: "options"`? Your Claude Code is older than 2.1.287: run `claude update`, then install again.
+
 ## Features
 
 - Interactive file tree for the working directory where you're using Claude Code; it follows the cwd, or `/filetree <path>` pins another folder
