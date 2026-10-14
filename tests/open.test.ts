@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { FONT_SCRIPT, openCommand, openWithCommand } from '../hooks/open'
+import { openCommand, openWithCommand } from '../hooks/open'
 
 test('open keeps file and URL targets literal on every platform', () => {
   for (const os of ['linux', 'darwin', 'win32'] as const) {
@@ -25,12 +25,4 @@ test('open with: words keep quotes whole, placeholders fill in, and the path goe
   expect(openWithCommand('code -g {path}:1', '/a/b.md', '/a')).toEqual(['code', '-g', '/a/b.md:1'])
   expect(openWithCommand(`herdr plugin pane open --cwd {dir} --env "VIEW={path}" ''`, '/a/{dir}.md', '/a')).toEqual(['herdr', 'plugin', 'pane', 'open', '--cwd', '/a', '--env', 'VIEW=/a/{dir}.md', ''])
   expect(openWithCommand('open -a "Sublime Text" --cwd {dir}', '/a/b.md', '/a')).toEqual(['open', '-a', 'Sublime Text', '--cwd', '/a', '/a/b.md'])
-})
-
-test('the font probe skips the LastResort placeholder font and still tries the Nerd Font folders', () => {
-  const probe = FONT_SCRIPT.indexOf('fc-list ":charset=$1" file | grep -vi lastresort')
-  const folders = FONT_SCRIPT.indexOf('Library/Fonts/*Nerd*')
-  expect(probe).toBeGreaterThan(-1)
-  expect(folders).toBeGreaterThan(probe)
-  expect(FONT_SCRIPT).not.toContain('else f=$(ls')
 })

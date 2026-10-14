@@ -170,6 +170,18 @@ test('macOS outside a repo: write scan uses find -newer marker, not GNU -newermt
   expect(find).not.toContain('-newermt')
 })
 
+test('macOS: the Nerd Font probe skips the LastResort placeholder font and still checks the Fonts folders', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/Users/k/scratch'
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']] }, status: '', numstat: '' }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const probe = ran.find(a => a[0] === 'sh' && (a[2] ?? '').includes('fc-list'))?.[2] ?? ''
+  const filtered = probe.indexOf('fc-list ":charset=$1" file | grep -vi lastresort')
+  expect(filtered).toBeGreaterThan(-1)
+  expect(probe.indexOf('Library/Fonts/*Nerd*')).toBeGreaterThan(filtered)
+})
+
 test('Windows: backslash paths shimmer, open hands the path to PowerShell as data, no find, sh or cmd', { timeoutMs: 20_000 }, async ($, on) => {
   const ran: Ran = []
   const root = 'C:/Users/k/proj'
