@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { LINUX_LAUNCH } from '../hooks/open'
+import { LINUX_LAUNCH, TMUX_OPEN } from '../hooks/open'
 import { age, ancestorsOf, formatSize, replaceChildren, toNodes } from '../hooks/tree'
 
 type World = {
@@ -493,6 +493,15 @@ test('watches only git metadata, copies paths, clears search, Home and End', { t
   await ui.post({ key: 'home' }, { in: 'rows' })
   await clock.settle()
   expect((await rowsOf()).active).toBe(`${root}/.git`)
+  await ui.press({ key: 'nav-j' })
+  await clock.settle()
+  expect((await rowsOf()).active).not.toBe(`${root}/.git`)
+  await ui.press({ key: 'nav-k' })
+  await clock.settle()
+  expect((await rowsOf()).active).toBe(`${root}/.git`)
+  await ui.input({ key: 'q', text: 'c', kind: 'submit' })
+  await clock.settle()
+  expect((await rowsOf()).active).toBe(`${root}/c.txt`)
   const before = ran.filter(a => a.includes('status')).length
   await $.classic.FileChanged({ file_path: `${root}/.git/index`, event: 'change' } as any)
   await clock.advance(400)
@@ -578,6 +587,59 @@ test('opener failures show a toast instead of failing silently', { timeoutMs: 20
   await ui.unmount()
 })
 
+test('open with unset: tmux and editor variables do not replace the default app', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/Users/k/proj'
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k', TMUX: '/tmp/tmux-501/default,1,0', VISUAL: 'vim', EDITOR: 'nano' }, cwd: root, top: '', dirs: { [root]: [['a.png', 'file'], ['b.pdf', 'file']] }, status: '', numstat: '' }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await ui.post({ press: `${root}/a.png` }, { in: 'rows' })
+  await ui.post({ press: `${root}/a.png` }, { in: 'rows' })
+  await ui.post({ key: 'down' }, { in: 'rows' })
+  await ui.post({ key: 'return' }, { in: 'rows' })
+  await clock.settle()
+  expect(ran).toContainEqual(['open', '--', `${root}/a.png`])
+  expect(ran).toContainEqual(['open', '--', `${root}/b.pdf`])
+  expect(ran.some(a => a.includes(TMUX_OPEN))).toBe(false)
+  await ui.unmount()
+})
+
+for (const [visual, editor, chosen] of [['vim', 'nano', 'vim'], ['', 'nano', 'nano'], ['', '', 'vi']]) {
+  test(`open with editor: VISUAL=${visual}, EDITOR=${editor} chooses ${chosen}`, { timeoutMs: 20_000, options: { open: 'editor' } }, async ($, on) => {
+    const ran: Ran = []
+    const root = '/home/k/proj'
+    const clock = world(on, { os: 'linux', env: { HOME: '/home/k', TMUX: '/tmp/tmux-1000/default,1,0', VISUAL: visual, EDITOR: editor }, cwd: root, top: '', dirs: { [root]: [['a b.md', 'file']] }, status: '', numstat: '' }, ran)
+    await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+    await ui.post({ press: `${root}/a b.md` }, { in: 'rows' })
+    await ui.press({ key: 'nav-o' })
+    await clock.settle()
+    expect(ran).toContainEqual(['sh', '-c', TMUX_OPEN, 'sh', `${root}/a b.md`, root, chosen])
+    expect(ran.some(a => a[0] === 'editor')).toBe(false)
+    await ui.unmount()
+  })
+}
+
+for (const [surface, os] of [['terminal', 'darwin'], ['desktop', 'darwin'], ['terminal', 'win32']] as const) {
+  test(`open with editor in an unsupported environment: ${surface} on ${os} requests a toast without opening a file`, { timeoutMs: 20_000, options: { open: 'editor' } }, async ($, on) => {
+    const ran: Ran = []
+    const root = os === 'win32' ? 'C:/Users/k/proj' : '/Users/k/proj'
+    const env = os === 'win32' ? { OS: 'Windows_NT', TMUX: '/tmp/tmux-501/default,1,0', EDITOR: 'vim' } : { HOME: '/Users/k', EDITOR: 'vim' }
+    const clock = world(on, { os, env, cwd: root, top: '', dirs: { [root]: [['a.md', 'file']] }, status: '', numstat: '' }, ran)
+    await $.session.start({ cwd: root, surface, isInteractive: true })
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: 'filetree', surface, component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+    ran.length = 0
+    await ui.post({ press: `${root}/a.md` }, { in: 'rows' })
+    await ui.post({ press: `${root}/a.md` }, { in: 'rows' })
+    await clock.settle()
+    expect(ran.filter(a => a[0] !== 'uname')).toEqual([['toast', 'Open with: editor requires tmux on Linux or macOS. Clear Open with to use the default app, or set a custom command.']])
+    await ui.unmount()
+  })
+}
+
 test('macOS: space on a file opens Quick Look, space on a folder still toggles it', { timeoutMs: 20_000 }, async ($, on) => {
   const ran: Ran = []
   const root = '/Users/k/proj'
@@ -600,10 +662,10 @@ test('macOS: space on a file opens Quick Look, space on a folder still toggles i
   await ui.unmount()
 })
 
-test('open with: a double-click and Enter run the configured command instead of the default app', { timeoutMs: 20_000, options: { open: 'glow -p {path} --dir "{dir}"' } }, async ($, on) => {
+test('open with: a double-click and Enter run the configured command instead of the default app, inside tmux too', { timeoutMs: 20_000, options: { open: 'glow -p {path} --dir "{dir}"' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/Users/k/my proj'
-  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: '', dirs: { [root]: [['a b.md', 'file'], ['c.md', 'file']] }, status: '', numstat: '', exits: { glow: [1, 'glow: no such file\n'] } }, ran)
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k', TMUX: '/tmp/tmux-501/default,1,0', EDITOR: 'nvim' }, cwd: root, top: '', dirs: { [root]: [['a b.md', 'file'], ['c.md', 'file']] }, status: '', numstat: '', exits: { glow: [1, 'glow: no such file\n'] } }, ran)
   await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
   await clock.settle()
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
@@ -611,7 +673,7 @@ test('open with: a double-click and Enter run the configured command instead of 
   await ui.post({ press: `${root}/a b.md` }, { in: 'rows' })
   await clock.settle()
   expect(ran).toContainEqual(['glow', '-p', `${root}/a b.md`, '--dir', root])
-  expect(ran.some(a => a[0] === 'open')).toBe(false)
+  expect(ran.some(a => a[0] === 'open' || a.includes('nvim'))).toBe(false)
   expect(ran.some(a => a[0] === 'toast' && (a[1] ?? '').includes('glow: no such file'))).toBe(true)
   await ui.post({ key: 'down' }, { in: 'rows' })
   await ui.post({ key: 'return' }, { in: 'rows' })
@@ -620,11 +682,11 @@ test('open with: a double-click and Enter run the configured command instead of 
   await ui.unmount()
 })
 
-test('open with preview: a double-click shows the file in the pane, left goes back to the tree, arrows scroll, ↗ opens the default app, a binary file shows a note', { timeoutMs: 20_000, options: { open: 'preview' } }, async ($, on) => {
+test('open with preview: a double-click shows the file in the pane, left goes back to the tree, arrows scroll, ↗ opens the default app inside tmux, a binary file shows a note', { timeoutMs: 20_000, options: { open: 'preview' } }, async ($, on) => {
   const ran: Ran = []
   const root = '/Users/k/proj'
   const clock = world(on, {
-    os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: '', status: '', numstat: '',
+    os: 'darwin', env: { HOME: '/Users/k', TMUX: '/tmp/tmux-501/default,1,0', VISUAL: 'nvim' }, cwd: root, top: '', status: '', numstat: '',
     dirs: { [root]: [['notes.md', 'file'], ['a.ts', 'file'], ['blob.bin', 'file']] },
     files: { [`${root}/notes.md`]: '# Title\r\n\nSome *notes*\u0007', [`${root}/a.ts`]: `const a = 1\n${'a++\n'.repeat(60)}`, [`${root}/blob.bin`]: 'PK\u0000\u0003' },
   }, ran)
@@ -1247,7 +1309,7 @@ for (const hints of ['on', 'off'] as const) {
     await clock.settle()
     const drawn = (await ui.drawn()) as any
     expect(JSON.stringify(drawn).includes('git init')).toBe(hints === 'on')
-    expect(drawn.children.find((c: any) => c.type === 'Client').props.props.rows.length).toBe(hints === 'on' ? 17 : 18)
+    expect(drawn.children.find((c: any) => c.type === 'Client').props.props.rows.length).toBe(hints === 'on' ? 16 : 17)
     await ui.unmount()
   })
 }

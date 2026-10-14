@@ -22,7 +22,49 @@ export const LINUX_OPEN = [
   'exec xdg-open "$f"',
 ].join('\n')
 
+export const TMUX_OPEN = [
+  'f=$1 d=$2; shift 2',
+  'bin=$1',
+  'case ${bin##*/} in nvim) ;; *) exec tmux new-window -c "$d" -- "$@" "$f" ;; esac',
+  'probe() {',
+  '  "$bin" --server "$s" --remote-expr \'$TMUX . " " . $TMUX_PANE\' 2>/dev/null &',
+  '  request=$!',
+  '  (sleep 1; kill -KILL "$request") >/dev/null 2>&1 &',
+  '  timer=$!',
+  '  wait "$request" 2>/dev/null; result=$?',
+  '  kill "$timer" 2>/dev/null',
+  '  wait "$timer" 2>/dev/null',
+  '  return "$result"',
+  '}',
+  'here=$(tmux display-message -p \'#{socket_path} #{session_id}\')',
+  'best= act=-1',
+  'for s in "${XDG_RUNTIME_DIR:-/nonexistent}"/nvim.*.0 "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"/nvim."$(id -un)"/*/nvim.*.0; do',
+  '  [ -S "$s" ] && [ -O "$s" ] || continue',
+  '  t=$(probe) || continue',
+  '  p=${t##* } sock=${t%%,*}',
+  '  [ -n "$p" ] && [ "$sock" != "$t" ] || continue',
+  '  info=$(tmux display-message -p -t "$p" \'#{socket_path} #{session_id} #{window_activity}\' 2>/dev/null) || continue',
+  '  location=${info% *} activity=${info##* }',
+  '  [ "$location" = "$here" ] && [ "${location% *}" = "$sock" ] && [ "$activity" -gt "$act" ] || continue',
+  '  best=$s pane=$p act=$activity',
+  'done',
+  'if [ -n "$best" ] && "$bin" --server "$best" --remote "$f"; then',
+  '  exec tmux select-window -t "$pane" \\; select-pane -t "$pane"',
+  'fi',
+  'exec tmux new-window -c "$d" -- "$@" "$f"',
+].join('\n')
+
 const WIN_OPEN = "$ErrorActionPreference = 'Stop'; [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{ FileName = $env:PANE_OPEN_TARGET; UseShellExecute = $true }) | Out-Null"
+
+export function tmuxOpenCommand(editor: string, target: string) {
+  const argv = words(editor)
+  if (!argv[0]) throw new Error('Editor command is empty')
+  const dir = target.slice(0, target.lastIndexOf('/')) || '/'
+  return {
+    argv: ['sh', '-c', TMUX_OPEN, 'sh', target, dir, ...argv],
+    init: { timeoutMs: 10_000 },
+  }
+}
 
 export function openCommand(os: 'linux' | 'darwin' | 'win32', target: string) {
   const argv = os === 'linux'
