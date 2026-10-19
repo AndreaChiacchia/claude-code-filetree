@@ -67,8 +67,6 @@ export function tmuxOpenCommand(editor: string, target: string, line?: number) {
   }
 }
 
-// herdr runs text in the new pane's shell, so the file name travels in that pane's environment and the shell
-// reads it back verbatim; only the editor words, which the user wrote, are quoted into the text.
 export function herdrOpenCommand(herdr: string, editor: string, target: string, line?: number) {
   const argv = words(editor)
   if (!argv[0]) throw new Error('Editor command is empty')

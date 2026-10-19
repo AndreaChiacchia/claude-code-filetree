@@ -1010,7 +1010,6 @@ async function editorHost($: EngineInterface, os: 'linux' | 'darwin' | 'win32'):
   return (await $.env.get('HERDR_ENV')) ? 'herdr' : ''
 }
 
-// Two herdr calls: split a pane beside this one, then run the editor in that pane's shell.
 async function openInHerdr($: EngineInterface, editor: string, path: string, line?: number): Promise<void> {
   const { split, run, init } = herdrOpenCommand((await $.env.get('HERDR_BIN_PATH')) || 'herdr', editor, path, line)
   const made = await $.process.run(split, init)
