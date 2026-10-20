@@ -74,7 +74,7 @@ const AGE_TICK_MS = 60_000
 let blink: Timer | null = null
 let themePoll: Timer | null = null
 let gitPoll: Timer | null = null
-let gitStamp = ''
+let gitStamp: string | null = null
 let gitDirOf = { root: '', dir: '' }
 let ageTick: Timer | null = null
 let themeMtime: number | null = null
@@ -226,8 +226,8 @@ async function loadDirs($: EngineInterface, dirs: string[]): Promise<Map<string,
   return listed
 }
 
-async function git($: EngineInterface, cwd: string, args: string[], timeoutMs = 20_000) {
-  return $.process.run(['git', '--no-optional-locks', '-C', cwd, ...args], { timeoutMs, env: { GIT_OPTIONAL_LOCKS: '0' } })
+async function git($: EngineInterface, cwd: string, args: string[], timeoutMs = 20_000, stdin?: string) {
+  return $.process.run(['git', '--no-optional-locks', '-C', cwd, ...args], { timeoutMs, env: { GIT_OPTIONAL_LOCKS: '0' }, ...(stdin === undefined ? {} : { stdin }) })
 }
 
 async function detectRepo($: EngineInterface): Promise<void> {
@@ -652,13 +652,16 @@ async function gitPaths($: EngineInterface, root: string, prefix: string, commit
 
 async function gitChanged($: EngineInterface): Promise<void> {
   const root = (await get($)).root
-  if (gitDirOf.root !== root) gitDirOf = { root, dir: await gitDir($, root) }
+  if (gitDirOf.root !== root || !gitDirOf.dir) gitDirOf = { root, dir: await gitDir($, root) }
   const gd = gitDirOf.dir
   const stamps = gd ? await Promise.all(['index', 'HEAD'].map(f => $.fs.stat(join(gd, f)).then(st => st.mtimeMs, () => 0))) : []
   const stamp = gd ? `${gd}:${stamps.join(':')}` : ''
   const before = gitStamp
   gitStamp = stamp
-  if (before && stamp && before !== stamp) void sync($, true)
+  if (before === '' && stamp) {
+    await detectRepo($)
+    void sync($, true)
+  } else if (before && stamp && before !== stamp) void sync($, true)
 }
 
 async function settleRoot($: EngineInterface): Promise<void> {
@@ -963,7 +966,10 @@ async function loadPreview($: EngineInterface, path: string): Promise<void> {
 
 async function loadDiff($: EngineInterface, path: string, folder: boolean): Promise<boolean> {
   const cwd = folder ? path : dirname(path)
-  const tracked = await git($, cwd, ['diff', 'HEAD', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--', path]).then(r => r.stdout, () => '')
+  const born = await git($, cwd, ['rev-parse', '--verify', '--quiet', 'HEAD']).then(r => r.exitCode === 0, () => false)
+  const base = born ? 'HEAD' : await git($, cwd, ['hash-object', '-t', 'tree', '--stdin'], 10_000, '').then(r => r.stdout.trim(), () => '')
+  if (!base) return false
+  const tracked = await git($, cwd, ['diff', base, '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--', path]).then(r => r.stdout, () => '')
   const others = await git($, cwd, ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', path]).then(r => r.stdout.split('\0').filter(Boolean), () => [] as string[])
   const top = (await get($)).top || cwd
   const files = splitPatch(tracked.slice(0, PREVIEW_CHARS))
@@ -998,8 +1004,7 @@ async function diffFile($: EngineInterface, path: string): Promise<void> {
   try {
     if (host === 'herdr') return await openInHerdr($, diffWithSetting, path)
     if (host === 'tmux') {
-      const { argv, init } = tmuxOpenCommand(diffWithSetting, path)
-      const run = await $.process.run(argv, init)
+      const run = await $.process.run(['tmux', 'new-window', '-c', dirname(path), '--', ...words(diffWithSetting), path], { timeoutMs: 10_000 })
       if (run.exitCode !== 0) $.ui.toast(`could not diff ${shortPath(path)} with ${diffWithSetting}: ${run.stderr.trim().split('\n')[0] || `exit ${run.exitCode}`}`)
       return
     }
@@ -1254,7 +1259,7 @@ export const register: Register = (on, options) => {
       ageTick?.cancel()
       ageTick = showAge ? $.clock.every(AGE_TICK_MS, () => $.ui.invalidate('ui.render')) : null
       gitPoll?.cancel()
-      gitStamp = ''
+      gitStamp = null
       gitPoll = $.clock.every(GIT_POLL_MS, () => void gitChanged($))
       const t = await get($)
       if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
