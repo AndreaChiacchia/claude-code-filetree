@@ -1042,7 +1042,7 @@ async function jumpDiff($: EngineInterface, dir: 1 | -1): Promise<void> {
   })
   const t = await get($)
   const to = dir > 0 ? marks.find(i => i > t.previewTop) : [...marks].reverse().find(i => i < t.previewTop)
-  if (to !== undefined) await scrollPreview($, to - t.previewTop)
+  if (to !== undefined) await patch($, () => ({ previewTop: to }))
 }
 
 async function scrollPreview($: EngineInterface, by: number): Promise<void> {
@@ -1516,7 +1516,7 @@ export const register: Register = (on, options) => {
       const markdown = /\.(md|markdown|mdx)$/i.test(t.preview)
       const all = p?.diff?.length ?? (p?.text ?? '').split('\n').length
       previewRows = nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 3 : 2))
-      const start = nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - previewRows))
+      const start = nativeScroll ? 0 : p?.diff ? Math.min(t.previewTop, Math.max(0, all - 1)) : Math.min(t.previewTop, Math.max(0, all - previewRows))
       const win = p?.diff ? diffWindow(p.diff, start, previewRows) : previewLines(p?.text ?? '', start, previewRows, markdown)
       previewLine = win.top + 1
       const name = t.preview !== t.root && inside(t.root, t.preview) ? relative(t.root, t.preview) : shortPath(t.preview)
