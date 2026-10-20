@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Claude_Code-%E2%89%A5_2.1.287-D97757?logo=claude&logoColor=fff" alt="Claude Code 2.1.287 or newer">
-  <img src="https://img.shields.io/badge/version-0.2.27-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.3.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/type-mod-6f42c1" alt="Claude Code mod">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -69,6 +69,9 @@ Install fails with `Unrecognized key: "options"`? Your Claude Code is older than
 - A light `/config` theme in the terminal gets its own palette, with every text color at WCAG AAA contrast (7:1 or more), also on the selected and hovered rows
 - Your own colors through the Palette setting, laid over whichever theme is active
 - `d` on a changed file shows its diff, in the pane or in hunk, lazygit or any diff tool you name
+
+  <img src="media/filetree-diff.gif" alt="Pressing d on a file and a folder shows their diffs in the pane, and j/k jump between changed files" width="800">
+
 
 ### Keyboard navigation
 
