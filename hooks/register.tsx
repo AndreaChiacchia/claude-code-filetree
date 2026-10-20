@@ -963,12 +963,12 @@ async function loadPreview($: EngineInterface, path: string): Promise<void> {
 
 async function loadDiff($: EngineInterface, path: string, folder: boolean): Promise<boolean> {
   const cwd = folder ? path : dirname(path)
-  const tracked = await git($, cwd, ['diff', 'HEAD', '--no-color', '--no-ext-diff', '--', path]).then(r => r.stdout, () => '')
+  const tracked = await git($, cwd, ['diff', 'HEAD', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--', path]).then(r => r.stdout, () => '')
   const others = await git($, cwd, ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', path]).then(r => r.stdout.split('\0').filter(Boolean), () => [] as string[])
   const top = (await get($)).top || cwd
   const files = splitPatch(tracked.slice(0, PREVIEW_CHARS))
   for (const rel of others.slice(0, 50)) {
-    const run = await git($, top, ['diff', '--no-index', '--no-color', '--no-ext-diff', '--', '/dev/null', rel]).catch(() => null)
+    const run = await git($, top, ['diff', '--no-index', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--', '/dev/null', rel]).catch(() => null)
     const file = run ? splitPatch(run.stdout.slice(0, PREVIEW_CHARS))[0] : undefined
     if (file) files.push({ path: rel, lines: file.lines })
   }

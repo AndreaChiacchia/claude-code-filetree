@@ -594,6 +594,7 @@ test('d on a folder shows every changed file under it in one diff, and j/k jump 
   await clock.settle()
   let shown = await texts(ui)
   expect(shown).toContain('3 changed files against HEAD')
+  expect(ran.filter(a => a[0] === 'git' && a.includes('--no-ext-diff')).every(a => a.includes('--src-prefix=a/') && a.includes('--dst-prefix=b/'))).toBe(true)
   expect(shown).toContain('"src/a.ts"')
   expect(shown).toContain('+new a')
   await ui.post({ key: 'j' }, { in: 'rows' })
