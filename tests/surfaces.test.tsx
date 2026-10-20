@@ -77,7 +77,7 @@ function world(on: any, w: World, ran: Ran) {
     const name = p.slice(p.lastIndexOf('/') + 1)
     const hit = dirOf(p) ? 'dir' : dirOf(parent)?.find(([n]) => n === name)?.[1]
     if (!hit) throw new Error(`ENOENT ${e.path}`)
-    return { value: { kind: hit, size: 1, mtimeMs: w.mtimes?.[p] ?? (name === 'a.ts' ? 1_800_000_000_500 : 1_700_000_000_000), isLink: false } }
+    return { value: { kind: hit, size: 1, mtimeMs: w.mtimes?.[p.replace(/^[A-Za-z]:/, '')] ?? (name === 'a.ts' ? 1_800_000_000_500 : 1_700_000_000_000), isLink: false } }
   })
   on('process.run', async (_$: any, e: any) => {
     const argv: string[] = [...e.argv]
