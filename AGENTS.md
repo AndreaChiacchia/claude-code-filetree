@@ -11,3 +11,7 @@
 
 - Every built-in color passes `bun scripts/contrast.ts`: text, git, line-count and bright shimmer colors at 3:1 on dark terminal backgrounds, dim shimmer steps at 2:1, and the light palette at 7:1 on white, the hover and the selected row
 - The `contrast` workflow runs that gate on any change that adds or edits a hex color under `hooks/`; fix the color, never lower the gate
+
+## Merging
+
+- Wait for the Codex review on a pull request to finish (its summary comment says completed for the head commit) and fix or answer every finding before merging; CI passing is not enough
