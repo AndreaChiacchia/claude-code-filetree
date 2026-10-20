@@ -58,6 +58,7 @@ const LIGHT_DEL_COLOR = '#7f1d1d'
 const LIGHT_HOVER = '#f0f2f5'
 const THEME_FILE = '.local/state/omarchy/current/theme/colors.toml'
 const THEME_POLL_MS = 2000
+const GIT_POLL_MS = 2000
 const FONT_SCRIPT =
   'if command -v fc-list >/dev/null 2>&1; then f=$(fc-list ":charset=$1" file | grep -vi lastresort | head -n1 | cut -d: -f1); fi; ' +
   '[ -n "$f" ] || f=$(ls "$HOME"/Library/Fonts/*Nerd* /Library/Fonts/*Nerd* 2>/dev/null | head -n1); ' +
@@ -75,6 +76,8 @@ const AGE_TICK_MS = 60_000
 
 let blink: Timer | null = null
 let themePoll: Timer | null = null
+let gitPoll: Timer | null = null
+let gitStamp = ''
 let ageTick: Timer | null = null
 let themeMtime: number | null = null
 let lightTerminal = false
@@ -645,6 +648,22 @@ async function gitPaths($: EngineInterface, root: string, prefix: string, commit
   }
 }
 
+async function gitChanged($: EngineInterface): Promise<void> {
+  const gd = await gitDir($, (await get($)).root)
+  const stamps = gd ? await Promise.all(['index', 'HEAD'].map(f => $.fs.stat(join(gd, f)).then(st => st.mtimeMs, () => 0))) : []
+  const stamp = gd ? `${gd}:${stamps.join(':')}` : ''
+  const before = gitStamp
+  gitStamp = stamp
+  if (before && stamp && before !== stamp) void sync($, true)
+}
+
+async function settleRoot($: EngineInterface): Promise<void> {
+  await loadTheme($)
+  const root = follow || !lastRoot ? await cwdOf($) : lastRoot
+  const t = await get($)
+  if (t.root !== root || t.nodes.length === 0) await reset($, root)
+}
+
 async function gitDir($: EngineInterface, cwd: string): Promise<string> {
   for (let dir = cwd, i = 0; i < 64; i++) {
     try {
@@ -1155,6 +1174,9 @@ export const register: Register = (on, options) => {
       themePoll = themeMtime ? $.clock.every(THEME_POLL_MS, () => void loadTheme($)) : null
       ageTick?.cancel()
       ageTick = showAge ? $.clock.every(AGE_TICK_MS, () => $.ui.invalidate('ui.render')) : null
+      gitPoll?.cancel()
+      gitStamp = ''
+      gitPoll = $.clock.every(GIT_POLL_MS, () => void gitChanged($))
       const t = await get($)
       if (t.flashOn) await patch($, () => ({ flash: [], flashDim: [], flashOn: false, flashTones: {} }))
       if (t.preview) await patch($, () => ({ preview: '', previewTop: 0 }))
@@ -1303,16 +1325,15 @@ export const register: Register = (on, options) => {
 
   on('classic.SessionStart', async ($, e, next) => {
     const result = await next(e)
-    if (e.source === 'clear' || e.source === 'resume' || e.source === 'fork') {
-      void (async () => {
-        await loadTheme($)
-        const root = follow || !lastRoot ? await cwdOf($) : lastRoot
-        const t = await get($)
-        if (t.root !== root || t.nodes.length === 0) await reset($, root)
-      })()
-    }
+    if (e.source === 'clear' || e.source === 'resume' || e.source === 'fork') void settleRoot($)
     const gd = await gitDir($, posix(e.cwd))
     return gd ? { ...result, watchPaths: [...(result.watchPaths ?? []), join(gd, 'index'), join(gd, 'HEAD')] } : result
+  })
+
+  on('session.end', async ($, e, next) => {
+    const result = await next(e)
+    if (e.reason === 'clear' || e.reason === 'resume') $.clock.after(0, () => void settleRoot($))
+    return result
   })
 
   on('classic.CwdChanged', async ($, e, next) => {

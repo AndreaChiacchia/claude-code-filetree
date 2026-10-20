@@ -77,7 +77,7 @@ function world(on: any, w: World, ran: Ran) {
     const name = p.slice(p.lastIndexOf('/') + 1)
     const hit = dirOf(p) ? 'dir' : dirOf(parent)?.find(([n]) => n === name)?.[1]
     if (!hit) throw new Error(`ENOENT ${e.path}`)
-    return { value: { kind: hit, size: 1, mtimeMs: name === 'a.ts' ? 1_800_000_000_500 : 1_700_000_000_000, isLink: false } }
+    return { value: { kind: hit, size: 1, mtimeMs: w.mtimes?.[p] ?? (name === 'a.ts' ? 1_800_000_000_500 : 1_700_000_000_000), isLink: false } }
   })
   on('process.run', async (_$: any, e: any) => {
     const argv: string[] = [...e.argv]
@@ -510,6 +510,43 @@ test('watches only git metadata, copies paths, clears search, Home and End', { t
   await $.classic.FileChanged({ file_path: `${root}/.git/index`, event: 'change' } as any)
   await clock.advance(400)
   expect(ran.filter(a => a.includes('status')).length).toBeGreaterThan(before)
+  await ui.unmount()
+})
+
+test('with the classic hooks bypassed, a git commit still recolours the tree', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const mtimes: Record<string, number> = {}
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['.git', 'dir'], ['a.txt', 'file']], [`${root}/.git`]: [['index', 'file'], ['HEAD', 'file']] }, status: '## main\0', numstat: '', mtimes }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  await clock.advance(2100)
+  const before = ran.filter(a => a.includes('status')).length
+  await clock.advance(2100)
+  expect(ran.filter(a => a.includes('status')).length).toBe(before)
+  mtimes[`${root}/.git/index`] = 1_800_000_009_000
+  await clock.advance(2100)
+  await clock.settle()
+  expect(ran.filter(a => a.includes('status')).length).toBeGreaterThan(before)
+})
+
+test('with the classic hooks bypassed, /clear still rebuilds the tree from session.end', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file'], ['sub', 'dir']], [`${root}/sub`]: [['b.ts', 'file']] }, status: '', numstat: '' }
+  const clock = world(on, w, ran)
+  on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect(await texts(ui)).toContain(`"id":"${root}/a.ts"`)
+  w.cwd = `${root}/sub`
+  await $.session.end({ reason: 'clear', sessionId: 'test-session' } as any)
+  await clock.advance(10)
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain(`"id":"${root}/sub/b.ts"`)
+  expect(shown).not.toContain(`"id":"${root}/a.ts"`)
   await ui.unmount()
 })
 
