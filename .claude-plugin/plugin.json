@@ -78,6 +78,26 @@
         "off"
       ]
     },
+    "spacing": {
+      "type": "string",
+      "title": "Search spacing",
+      "description": "on: a blank line above and below the search bar. off: the search bar sits right under the header and the tree gets the two rows.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
+    "shortcuts": {
+      "type": "string",
+      "title": "Shortcut row",
+      "description": "on: the j/k/h/l/open/search row under the search bar. off: the row is hidden and the tree gets it; the keys still work with the tree focused.",
+      "default": "on",
+      "options": [
+        "on",
+        "off"
+      ]
+    },
     "open": {
       "type": "string",
       "title": "Open with",
@@ -88,6 +108,18 @@
       "type": "string",
       "title": "Edit with",
       "description": "What e does in the preview: open the file at the top line shown. Empty: $VISUAL, then $EDITOR, then vi in tmux or a herdr pane with +line (Linux/macOS only; the e button is hidden elsewhere). Anything else is a command like Open with, where {line} is that line, for example code -g {path}:{line} or zed {path}:{line}.",
+      "default": ""
+    },
+    "diff": {
+      "type": "string",
+      "title": "Diff with",
+      "description": "What d does on a changed file, in the tree or the preview. Empty: show its diff against HEAD in the pane, drawn by Claude Code's own diff view (an untracked file shows as all added; d again goes back to the file). Anything else is a terminal command, run on the file in a tmux window, a herdr pane or, on Linux, a new terminal window through xdg-terminal-exec, the file path going last. Examples: hunk diff --, lazygit -f, git difftool -y --, nvim -c Gvdiffsplit.",
+      "default": ""
+    },
+    "palette": {
+      "type": "string",
+      "title": "Palette",
+      "description": "Your own colors, laid over the Omarchy, light or default theme: key=#hex pairs separated by spaces. Keys: fg, bg, accent (folders, links), muted (dates, sizes), urgent (deleted, conflicts), selection (selected row), hover (hovered row), added, modified, renamed (git status), add and del (line counts). A key you leave out keeps the theme's color. Example (Gruvbox Dark Hard): fg=#ebdbb2 bg=#1d2021 accent=#83a598 muted=#928374 urgent=#fb4934 selection=#3c3836 added=#b8bb26 modified=#fabd2f renamed=#83a598 add=#b8bb26 del=#fb4934",
       "default": ""
     }
   },

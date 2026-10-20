@@ -1,10 +1,12 @@
 import { type BuiltinToolResults, type EngineInterface, type Register, type Timer, update } from 'claude-code'
-import { herdrError, herdrOpenCommand, herdrPane, LINUX_LAUNCH, openCommand, openWithCommand, tmuxOpenCommand } from './open'
+import { herdrError, herdrOpenCommand, herdrPane, LINUX_LAUNCH, openCommand, openWithCommand, tmuxOpenCommand, words } from './open'
 import type { ButtonProps } from './button'
 
 import type { Activity, FileNode, FileTree, Theme } from '../types'
 import { BRANCH_ICON, chainOf, type GitAction, gitActions, LIGHT_TONES, readOnly, readTargets, resolve, TONES } from './git'
 import type { RowSpec, RowsProps, Seg } from './rows'
+import { type DiffLine, diffWindow, splitPatch } from './diff'
+import { ADD_COLOR, DEL_COLOR, LIGHT_ADD_COLOR, LIGHT_DEL_COLOR, LIGHT_HOVER, type Palette, parsePalette } from './palette'
 import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR, LIGHT_GIT_COLOR } from './icons'
 import {
   age,
@@ -51,11 +53,6 @@ const ROWS_BUDGET = 80_000
 const READ_REVEAL_LIMIT = 12
 const SEARCH_REVEAL_LIMIT = 60
 const ACTIVITY_TTL_MS = 45_000
-const ADD_COLOR = '#98c379'
-const DEL_COLOR = '#e06c75'
-const LIGHT_ADD_COLOR = '#14532d'
-const LIGHT_DEL_COLOR = '#7f1d1d'
-const LIGHT_HOVER = '#f0f2f5'
 const THEME_FILE = '.local/state/omarchy/current/theme/colors.toml'
 const THEME_POLL_MS = 2000
 const GIT_POLL_MS = 2000
@@ -78,6 +75,7 @@ let blink: Timer | null = null
 let themePoll: Timer | null = null
 let gitPoll: Timer | null = null
 let gitStamp = ''
+let gitDirOf = { root: '', dir: '' }
 let ageTick: Timer | null = null
 let themeMtime: number | null = null
 let lightTerminal = false
@@ -87,10 +85,12 @@ let noNerd = false
 let glyphSetting = 'auto'
 let openWithSetting = ''
 let editWithSetting = ''
+let diffWithSetting = ''
+let palette: Palette = parsePalette('')
 let inTmux = false
 let inHerdr = false
 let previewLine = 1
-let previewed: { path: string; text: string; note: string } | null = null
+let previewed: { path: string; text: string; note: string; diff?: DiffLine[] } | null = null
 let previewRows = 20
 let follow = true
 let followClaude = true
@@ -118,6 +118,8 @@ let lastRoot = ''
 let sizeDefault = false
 let showAge = false
 let showHints = true
+let searchGap = true
+let showShortcuts = true
 let sizeEpoch = 0
 let sizeActive = 0
 let sizeQueue: string[] = []
@@ -649,7 +651,9 @@ async function gitPaths($: EngineInterface, root: string, prefix: string, commit
 }
 
 async function gitChanged($: EngineInterface): Promise<void> {
-  const gd = await gitDir($, (await get($)).root)
+  const root = (await get($)).root
+  if (gitDirOf.root !== root) gitDirOf = { root, dir: await gitDir($, root) }
+  const gd = gitDirOf.dir
   const stamps = gd ? await Promise.all(['index', 'HEAD'].map(f => $.fs.stat(join(gd, f)).then(st => st.mtimeMs, () => 0))) : []
   const stamp = gd ? `${gd}:${stamps.join(':')}` : ''
   const before = gitStamp
@@ -957,6 +961,60 @@ async function loadPreview($: EngineInterface, path: string): Promise<void> {
   previewed = { path, text: fit.join('\n'), note }
 }
 
+async function loadDiff($: EngineInterface, path: string, folder: boolean): Promise<boolean> {
+  const cwd = folder ? path : dirname(path)
+  const tracked = await git($, cwd, ['diff', 'HEAD', '--no-color', '--no-ext-diff', '--', path]).then(r => r.stdout, () => '')
+  const others = await git($, cwd, ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', path]).then(r => r.stdout.split('\0').filter(Boolean), () => [] as string[])
+  const top = (await get($)).top || cwd
+  const files = splitPatch(tracked.slice(0, PREVIEW_CHARS))
+  for (const rel of others.slice(0, 50)) {
+    const run = await git($, top, ['diff', '--no-index', '--no-color', '--no-ext-diff', '--', '/dev/null', rel]).catch(() => null)
+    const file = run ? splitPatch(run.stdout.slice(0, PREVIEW_CHARS))[0] : undefined
+    if (file) files.push({ path: rel, lines: file.lines })
+  }
+  if (!files.length) return false
+  const many = folder || files.length > 1
+  const lines = files.flatMap(f => (many ? [{ kind: '@' as const, text: f.path, old: 0, new: 0 }, ...f.lines] : f.lines))
+  const note = many ? `${files.length} changed file${files.length === 1 ? '' : 's'} against HEAD` : others.length ? 'untracked file' : 'changes against HEAD'
+  previewed = { path, text: '', note, diff: lines }
+  return true
+}
+
+async function diffFile($: EngineInterface, path: string): Promise<void> {
+  if (!diffWithSetting) {
+    const t = await get($)
+    const folder = t.nodes.find(n => n.id === path)?.kind === 'dir'
+    if (t.preview === path && previewed?.path === path && previewed.diff) return folder ? closePreview($) : showPreview($, path)
+    if (!(await loadDiff($, path, folder))) {
+      $.ui.toast(`no changes in ${shortPath(path)}`)
+      return
+    }
+    await patch($, () => ({ preview: path, previewTop: 0, selected: path }))
+    $.clock.after(100, () => parkPreview($))
+    return
+  }
+  const os = await osName($)
+  const host = await editorHost($, os)
+  try {
+    if (host === 'herdr') return await openInHerdr($, diffWithSetting, path)
+    if (host === 'tmux') {
+      const { argv, init } = tmuxOpenCommand(diffWithSetting, path)
+      const run = await $.process.run(argv, init)
+      if (run.exitCode !== 0) $.ui.toast(`could not diff ${shortPath(path)} with ${diffWithSetting}: ${run.stderr.trim().split('\n')[0] || `exit ${run.exitCode}`}`)
+      return
+    }
+    if (os === 'linux') {
+      const argv = ['sh', '-c', LINUX_LAUNCH, 'sh', 'xdg-terminal-exec', 'sh', '-c', 'cd "$1" && shift && exec "$@"', 'sh', dirname(path), ...words(diffWithSetting), path]
+      const run = await $.process.run(argv, { timeoutMs: 10_000 })
+      if (run.exitCode !== 0) $.ui.toast(`could not diff ${shortPath(path)} with ${diffWithSetting}: ${run.stderr.trim().split('\n')[0] || `exit ${run.exitCode}`}`)
+      return
+    }
+    $.ui.toast('Diff with: a terminal command needs tmux, herdr or Linux. Clear Diff with to see the diff in the pane.')
+  } catch {
+    $.ui.toast(`could not diff ${shortPath(path)} with ${diffWithSetting}`)
+  }
+}
+
 async function showPreview($: EngineInterface, path: string): Promise<void> {
   await loadPreview($, path)
   await patch($, () => ({ preview: path, previewTop: 0, selected: path }))
@@ -969,12 +1027,27 @@ function parkPreview($: EngineInterface): void {
 
 async function closePreview($: EngineInterface): Promise<void> {
   await patch($, () => ({ preview: '', previewTop: 0 }))
-  $.clock.after(100, () => void $.ui.focus({ requestId: PANE, key: 'nav-o' }).catch(() => {}))
+  $.clock.after(100, () => void $.ui.focus({ requestId: PANE, key: showShortcuts ? 'nav-o' : 'rows' }).catch(() => {}))
+}
+
+async function jumpDiff($: EngineInterface, dir: 1 | -1): Promise<void> {
+  const lines = previewed?.diff
+  if (!lines) return
+  const files = lines.some(l => l.kind === '@')
+  const marks = lines.flatMap((l, i) => {
+    if (files) return l.kind === '@' ? [i] : []
+    const prev = lines[i - 1]
+    const gap = !prev || l.old !== prev.old + (prev.kind === '+' ? 0 : 1) || l.new !== prev.new + (prev.kind === '-' ? 0 : 1)
+    return gap ? [i] : []
+  })
+  const t = await get($)
+  const to = dir > 0 ? marks.find(i => i > t.previewTop) : [...marks].reverse().find(i => i < t.previewTop)
+  if (to !== undefined) await scrollPreview($, to - t.previewTop)
 }
 
 async function scrollPreview($: EngineInterface, by: number): Promise<void> {
   const t = await get($)
-  const last = Math.max(0, (previewed?.text.split('\n').length ?? 1) - previewRows)
+  const last = Math.max(0, (previewed?.diff?.length ?? previewed?.text.split('\n').length ?? 1) - previewRows)
   const top = Math.max(0, Math.min(last, t.previewTop + by))
   if (top !== t.previewTop) await patch($, () => ({ previewTop: top }))
 }
@@ -1090,6 +1163,7 @@ async function navigate($: EngineInterface, key: string, shift = false, surface?
   else if (key === 'pagedown') await move(10)
   else if (key === 'home') await move(-rows.length)
   else if (key === 'end') await move(rows.length)
+  else if (cur && key === 'd') await diffFile($, cur.id)
   else if (cur && (key === 'y' || key === 'Y')) await copyPath($, cur.id, key === 'Y' || shift, surface)
   else if (cur && (key === 'right' || key === 'l') && cur.kind === 'dir' && !t.expanded.includes(cur.id)) await toggle($, cur)
   else if (cur && (key === 'left' || key === 'h')) {
@@ -1149,11 +1223,16 @@ export const register: Register = (on, options) => {
   sizeDefault = options?.column === 'size'
   showAge = options?.column === 'age'
   showHints = options?.hints !== 'off'
+  searchGap = options?.spacing !== 'off'
+  showShortcuts = options?.shortcuts !== 'off'
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
   editWithSetting = typeof options?.edit === 'string' ? options.edit.trim() : ''
+  palette = parsePalette(options?.palette)
+  diffWithSetting = typeof options?.diff === 'string' ? options.diff.trim() : ''
   noDock = options?.start === 'off'
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd)' })
+    if (palette.unknown.length) void $.ui.toast(`filetree palette: ignored ${palette.unknown.join(' ')}; use key=#hex with fg, bg, accent, muted, urgent, selection, hover, added, modified, renamed, add or del`)
     const windows = (await $.env.get('OS')) === 'Windows_NT'
     useDrives(windows)
     inTmux = !windows && Boolean(await $.env.get('TMUX'))
@@ -1316,6 +1395,8 @@ export const register: Register = (on, options) => {
       const by: Record<string, number> = { up: -1, k: -1, down: 1, j: 1, f: page, b: -page, pageup: -page, pagedown: page, home: -Infinity, end: Infinity }
       if (data.key === 'left' || data.key === 'h') await closePreview($)
       else if (data.key === 'e') await editPreview($, t.preview)
+      else if (data.key === 'd') await diffFile($, t.preview)
+      else if (previewed?.diff && (data.key === 'j' || data.key === 'k')) await jumpDiff($, data.key === 'j' ? 1 : -1)
       else if (data.key in by) await scrollPreview($, by[data.key] ?? 0)
       return {}
     }
@@ -1411,12 +1492,12 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Input, Client } = $.ui.resolve(e)
     const t = await get($)
     const light = !themeMtime && e.surface !== 'desktop' && lightTerminal
-    const theme: Theme = light ? LIGHT_THEME : ((await $.state.get(THEME)).value ?? DEFAULT_THEME)
+    const theme: Theme = { ...(light ? LIGHT_THEME : ((await $.state.get(THEME)).value ?? DEFAULT_THEME)), ...palette.theme }
     const tones = light ? LIGHT_TONES : TONES
-    const gitColors = light ? LIGHT_GIT_COLOR : GIT_COLOR
-    const addColor = light ? LIGHT_ADD_COLOR : ADD_COLOR
-    const delColor = light ? LIGHT_DEL_COLOR : DEL_COLOR
-    const rowColors = { activeBg: theme.selection, hoverBg: light ? LIGHT_HOVER : faint(theme.selection), tones: light ? LIGHT_SHIMMER : SHIMMER }
+    const gitColors = { ...(light ? LIGHT_GIT_COLOR : GIT_COLOR), ...palette.git }
+    const addColor = palette.add ?? (light ? LIGHT_ADD_COLOR : ADD_COLOR)
+    const delColor = palette.del ?? (light ? LIGHT_DEL_COLOR : DEL_COLOR)
+    const rowColors = { activeBg: theme.selection, hoverBg: palette.hover ?? (light ? LIGHT_HOVER : faint(theme.selection)), tones: light ? LIGHT_SHIMMER : SHIMMER }
     // The desktop tab never hands the wheel or the scrollbar drag to the pane, so
     // there it draws every row and lets the engine scroll the body.
     nativeScroll = e.surface === 'desktop'
@@ -1433,9 +1514,10 @@ export const register: Register = (on, options) => {
       if (previewed?.path !== t.preview) await loadPreview($, t.preview)
       const p = previewed
       const markdown = /\.(md|markdown|mdx)$/i.test(t.preview)
-      const all = (p?.text ?? '').split('\n').length
+      const all = p?.diff?.length ?? (p?.text ?? '').split('\n').length
       previewRows = nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 3 : 2))
-      const win = previewLines(p?.text ?? '', nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - previewRows)), previewRows, markdown)
+      const start = nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - previewRows))
+      const win = p?.diff ? diffWindow(p.diff, start, previewRows) : previewLines(p?.text ?? '', start, previewRows, markdown)
       previewLine = win.top + 1
       const name = t.preview !== t.root && inside(t.root, t.preview) ? relative(t.root, t.preview) : shortPath(t.preview)
       const external = { id: 'external', label: unicode ? '↗' : '\u{f08e}', dim: true, hint: 'open in default app' }
@@ -1451,16 +1533,19 @@ export const register: Register = (on, options) => {
             {button(external)}
           </Box>
           <Box flexDirection="row" gap={2}>
-            {([['j', '↓', '\u{f0045}', 1], ['k', '↑', '\u{f005d}', -1], ['f', 'page ↓', '\u{f0045} page', previewRows - 2], ['b', 'page ↑', '\u{f005d} page', 2 - previewRows]] as const).map(([k, plain, nerd, by]) => (
-              <Button key={`pv-${k}`} plain dimColor hotkey={k} label={unicode ? plain : nerd} onPress={() => void scrollPreview($, by).then(() => parkPreview($))} />
-            ))}
+            {([['j', '↓', '\u{f0045}', 1], ['k', '↑', '\u{f005d}', -1], ['f', 'page ↓', '\u{f0045} page', previewRows - 2], ['b', 'page ↑', '\u{f005d} page', 2 - previewRows]] as const).map(([k, plain, nerd, by]) => {
+              const step = p?.diff && (k === 'j' || k === 'k') ? (p.diff.some(l => l.kind === '@') ? 'file' : 'hunk') : ''
+              const label = step ? `${unicode ? plain : nerd} ${step}` : unicode ? plain : nerd
+              return <Button key={`pv-${k}`} plain dimColor hotkey={k} label={label} onPress={() => void (step ? jumpDiff($, by > 0 ? 1 : -1) : scrollPreview($, by)).then(() => parkPreview($))} />
+            })}
+            <Button key="pv-d" plain dimColor hotkey="d" label={p?.diff ? (t.nodes.find(n => n.id === t.preview)?.kind === 'dir' ? 'tree' : 'file') : 'diff'} onPress={() => void diffFile($, t.preview)} />
             {editWithSetting || inTmux || inHerdr ? <Button key="edit" plain dimColor autoFocus hotkey="e" label={`${unicode ? 'edit' : '\u{f03eb} edit'} :${previewLine}`} onPress={() => void editPreview($, t.preview)} /> : null}
           </Box>
           {p?.note ? <Text dimColor={!light} color={light ? theme.muted : undefined}>{p.note}</Text> : null}
           <Client
             key="rows"
             module="./rows.tsx"
-            props={{ rows: [], active: '', ...rowColors, pointer: false, preview: { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
+            props={{ rows: [], active: '', ...rowColors, pointer: false, preview: 'segments' in win ? { text: '', path: t.preview, startLine: win.top + 1, markdown: false, segments: win.segments, titleColor: theme.accent } : { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
           />
         </Box>
       )
@@ -1474,7 +1559,7 @@ export const register: Register = (on, options) => {
     const untracked = new Set(t.untrackedDirs)
     const width = Math.max(24, e.props.bodyColumns)
     const rows = visibleRows(t)
-    const fixed = 3 + (t.top ? (t.branch ? 1 : 0) : showHints ? 1 : 0) + (t.selected || latest ? 1 : 0)
+    const fixed = 1 + (showShortcuts ? 1 : 0) + (searchGap ? 2 : 0) + 1 + (t.top ? (t.branch ? 1 : 0) : showHints ? 1 : 0) + (t.selected || latest ? 1 : 0)
     const room = nativeScroll ? Math.max(1, rows.length) : Math.max(5, (e.props.scroll?.bodyRows ?? 40) - fixed)
     const isLit = (id: string) => bright.has(id) || dimmed.has(id)
     const focus = followClaude && t.flashOn ? ([...t.flash].reverse().find(id => id !== BRANCH_ROW) ?? t.cursor) : t.cursor
@@ -1639,7 +1724,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const park = () => void $.ui.focus({ requestId: PANE, key: 'nav-o' }).catch(() => {})
+    const park = () => void $.ui.focus({ requestId: PANE, key: showShortcuts ? 'nav-o' : 'rows' }).catch(() => {})
 
     return (
       <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
@@ -1656,6 +1741,7 @@ export const register: Register = (on, options) => {
         </Box>
         {branchRow()}
         {!t.top && showHints && <Text color={theme.muted}>{unicode ? '± ' : '\u{e702} '}no git repo · git status starts after git init</Text>}
+        {searchGap ? <Text key="gap-above"> </Text> : null}
         <Box flexDirection="row">
           <Box flexGrow={1}>
             <Input
@@ -1670,6 +1756,8 @@ export const register: Register = (on, options) => {
           </Box>
           {t.query ? <Button key="clear" plain dimColor label={unicode ? '×' : '\u{f0156}'} onPress={() => void search($, '')} /> : null}
         </Box>
+        {searchGap ? <Text key="gap-below"> </Text> : null}
+        {showShortcuts ? (
         <Box flexDirection="row" gap={2}>
           {([['j', '↓', '\u{f0045}'], ['k', '↑', '\u{f005d}'], ['h', '←', '\u{f004d}'], ['l', '→', '\u{f0054}']] as const).map(([k, plain, nerd]) => (
             <Button key={`nav-${k}`} plain dimColor hotkey={k} label={unicode ? plain : nerd} onPress={() => void navigate($, k).then(park)} />
@@ -1677,6 +1765,7 @@ export const register: Register = (on, options) => {
           <Button key="nav-o" plain dimColor autoFocus hotkey="o" label={unicode ? 'open' : '\u{f03cb} open'} onPress={() => void navigate($, 'return')} />
           <Button key="nav-s" plain dimColor hotkey="s" label={unicode ? 'search' : '\u{f0349} search'} onPress={() => void $.ui.focus({ requestId: PANE, key: 'q' })} />
         </Box>
+        ) : null}
         <Client
           key="rows"
           module="./rows.tsx"
