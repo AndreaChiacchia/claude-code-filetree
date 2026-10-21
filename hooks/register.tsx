@@ -118,6 +118,7 @@ let lastRoot = ''
 let sizeDefault = false
 let showAge = false
 let showHints = true
+let ignoreNames: string[] = []
 let searchGap = true
 let showShortcuts = true
 let sizeEpoch = 0
@@ -200,7 +201,7 @@ async function list($: EngineInterface, dir: string): Promise<FileNode[] | null>
       }),
     )
     unreadable.delete(dir)
-    return toNodes(dir, resolved)
+    return toNodes(dir, resolved.filter(e => !ignoreNames.includes(e.name)))
   } catch (err) {
     if (!(await exists($, dir))) return []
     if (!unreadable.has(dir)) {
@@ -335,8 +336,12 @@ async function revealPaths($: EngineInterface, paths: string[]): Promise<void> {
   }
 }
 
+function isIgnored(root: string, path: string): boolean {
+  return ignoreNames.length > 0 && relative(root, path).split('/').some(name => ignoreNames.includes(name))
+}
+
 function pruneArgs(root: string, ignored: string[] = []): string[] {
-  const names = broad(root) ? [...PRUNE, ...HOME_PRUNE] : PRUNE
+  const names = [...PRUNE, ...(broad(root) ? HOME_PRUNE : []), ...ignoreNames.map(n => n.replace(/[*?[\]\\]/g, '\\$&'))]
   return ['(', ...names.flatMap((name, i) => (i === 0 ? ['-name', name] : ['-o', '-name', name])), ...ignored.flatMap(p => ['-o', '-path', p]), ')', '-prune', '-o']
 }
 
@@ -378,7 +383,7 @@ async function changedInRepo($: EngineInterface, root: string, since: Since, bef
   const entries = Object.entries(dirty.files)
   const gone = entries.filter(([p, c]) => c === 'del' && before[p] !== 'del').map(([p]) => p)
   const live = entries.filter(([, c]) => c !== 'del').map(([p]) => p)
-  return { hits: await newer($, live.slice(0, 4_000), since.ms), gone }
+  return { hits: await newer($, live.filter(p => !isIgnored(root, p)).slice(0, 4_000), since.ms), gone }
 }
 
 type Since = { ms: number; mark: string; os: 'linux' | 'darwin' | 'win32' }
@@ -743,7 +748,7 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
     const found = fresh.top
       ? await changedInRepo($, t.root, since, before, fresh.ignored)
       : { hits: since.os === 'win32' ? [] : await changedSince($, t.root, since, NO_REPO_DEPTH), gone: [] }
-    const hits = found.hits.filter(x => inside(t.root, x) && !underAny(x, ignored, t.root)).slice(0, FIND_LIMIT)
+    const hits = found.hits.filter(x => inside(t.root, x) && !underAny(x, ignored, t.root) && !isIgnored(t.root, x)).slice(0, FIND_LIMIT)
     await revealPaths($, hits)
     const loaded = await get($)
     const dirs = [...new Set([loaded.root, ...openDirs(loaded), ...hits.map(dirname), ...found.gone.map(dirname)])].filter(d => inside(loaded.root, d))
@@ -762,7 +767,7 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
     const found: string[] = []
     for (const r of reads) {
       if (found.length >= READ_REVEAL_LIMIT) break
-      if (r !== t.root && inside(t.root, r) && !underAny(r, ignored, t.root) && (await exists($, r))) found.push(r)
+      if (r !== t.root && inside(t.root, r) && !underAny(r, ignored, t.root) && !isIgnored(t.root, r) && (await exists($, r))) found.push(r)
     }
     if (found.length) {
       await revealPaths($, found)
@@ -774,7 +779,7 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
     const final = await get($)
     const committed = actions.some(a => a.verb === 'commit')
     if ((committed || actions.some(a => a.verb === 'add')) && final.top) {
-      const paths = (await gitPaths($, final.root, final.prefix, committed)).filter(x => !underAny(x, ignored, final.root)).slice(0, READ_REVEAL_LIMIT)
+      const paths = (await gitPaths($, final.root, final.prefix, committed)).filter(x => !underAny(x, ignored, final.root) && !isIgnored(final.root, x)).slice(0, READ_REVEAL_LIMIT)
       await revealPaths($, paths)
       const shown = new Set((await get($)).nodes.map(n => n.id))
       for (const x of paths) if (shown.has(x)) tones[x] = 'green'
@@ -810,7 +815,7 @@ async function touched($: EngineInterface, paths: string[], tone: string, show: 
   if (await followCwd($)) return
   const t = await get($)
   if (!t.root) return
-  const within = paths.map(posix).filter(p => inside(t.root, p))
+  const within = paths.map(posix).filter(p => inside(t.root, p) && !isIgnored(t.root, p)).slice(0, SEARCH_REVEAL_LIMIT)
   if (within.length === 0) return
   if (tone !== 'purple') {
     searchIndex = null
@@ -862,7 +867,7 @@ async function listAll($: EngineInterface, t: FileTree): Promise<string[] | null
     if (t.top && run.exitCode !== 0) return null
     const paths = run.stdout.split('\0').filter(Boolean)
     if (run.isStdoutTruncated) paths.pop()
-    return paths.map(p => (isAbsolute(p) ? p : join(t.root, p)))
+    return paths.map(p => (isAbsolute(p) ? p : join(t.root, p))).filter(p => !isIgnored(t.root, p))
   } catch {
     return null
   }
@@ -1228,6 +1233,7 @@ export const register: Register = (on, options) => {
   sizeDefault = options?.column === 'size'
   showAge = options?.column === 'age'
   showHints = options?.hints !== 'off'
+  ignoreNames = typeof options?.ignore === 'string' ? options.ignore.split(/[\s,]+/).filter(Boolean) : []
   searchGap = options?.spacing !== 'off'
   showShortcuts = options?.shortcuts !== 'off'
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
@@ -1358,7 +1364,7 @@ export const register: Register = (on, options) => {
       const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
       if (!Array.isArray(names) || names.length === 0) return result
       const cwd = await cwdOf($)
-      void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', true)
+      void touched($, names.map(f => resolve(cwd, posix(f), home)), 'purple', true)
       return result
     })
 
